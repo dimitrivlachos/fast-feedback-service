@@ -414,6 +414,9 @@ void call_do_spotfinding_extended(dim3 blocks,
 
     constexpr int first_pass_kernel_radius = 3;
 
+    // Print max_valid_pixel_value
+    printf("max_valid_pixel_value: %d\n", max_valid_pixel_value);
+
     // Do the first step of spotfinding
     do_spotfinding_dispersion<<<blocks, threads, shared_memory, stream>>>(
       image.get(),
