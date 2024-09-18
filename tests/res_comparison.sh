@@ -31,7 +31,8 @@ exec 3> output_file.txt
   --detector "$(cat detector.json)" \
   --algorithm "dispersion" \
   --threads 1 \
-  --images 1
+  --images 1 \
+  --writeout
 
 # Close file descriptor 3
 exec 3>&-
