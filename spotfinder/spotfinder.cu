@@ -8,6 +8,8 @@
 // #include <bitshuffle.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <fmt/core.h>
+#include <fmt/os.h>
 #include <lodepng.h>
 
 #include "kernels/erosion.cuh"
@@ -219,7 +221,7 @@ __device__ void calculate_sums(pixel_t *image,
                 include_pixel =
                   include_pixel
                   && (background_mask_pixel
-                      == VALID_PIXEL);  // And is NOT a survivor from the erosion process
+                      == MASKED_PIXEL);  // And is NOT a survivor from the erosion process
             }
             if (include_pixel) {
                 sum += pixel;
@@ -508,11 +510,22 @@ void call_do_spotfinding_extended(dim3 blocks,
                 }
             }
         }
+        static int erosion_mask_counter = 0;
         lodepng::encode("erosion_mask.png",
                         reinterpret_cast<uint8_t *>(image_mask.data()),
                         width,
                         height,
                         LCT_RGB);
+        // Writeout a list of pixels that are part of the erosion mask
+        auto out = fmt::output_file(
+          fmt::format("erosion_mask_{:05d}.txt", erosion_mask_counter));
+        for (int y = 0, k = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x, ++k) {
+                if (!mask_buffer[k]) {
+                    out.print("{}, {}\n", x, y);
+                }
+            }
+        }
     }
 
     constexpr int second_pass_kernel_radius = 5;
