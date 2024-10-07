@@ -374,16 +374,12 @@ __global__ void compute_threshold_kernel(pixel_t *image,
     image = image + (image_pitch * height * blockIdx.z);
     result_mask = result_mask + (mask_pitch * height * blockIdx.z);
 
-    auto block = cg::this_thread_block();
-
-    // Initialize variables for computing the local sum and count
-    uint sum = 0;
-    size_t sumsq = 0;
-    uint8_t n = 0;
-
     // Calculate the pixel coordinates
+    auto block = cg::this_thread_block();
     int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
     int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
+
+    if (x >= width || y >= height) return;  // Out of bounds guard
 
     // Calculate the index of the pixel in the image and mask data
     int index = y * image_pitch + x;
@@ -391,6 +387,11 @@ __global__ void compute_threshold_kernel(pixel_t *image,
 
     // Check if the pixel is masked and below the maximum valid pixel value
     bool px_is_valid = mask[index] != 0 && this_pixel <= max_valid_pixel_value;
+
+    // Initialize variables for computing the local sum and count
+    uint sum = 0;
+    size_t sumsq = 0;
+    uint8_t n = 0;
 
     for (int row = max(0, y - kernel_height); row < min(y + kernel_height + 1, height);
          ++row) {
@@ -409,24 +410,26 @@ __global__ void compute_threshold_kernel(pixel_t *image,
         }
     }
 
-    if (x < width && y < height) {
-        // Calculate the thresholding
-        if (px_is_valid && n > 1) {
-            float sum_f = static_cast<float>(sum);
-            float sumsq_f = static_cast<float>(sumsq);
+    if (px_is_valid && n > 1) {
+        // Compute local mean and variance
+        float sum_f = static_cast<float>(sum);
+        float sumsq_f = static_cast<float>(sumsq);
 
-            float mean = sum_f / n;
-            float variance = (n * sumsq_f - (sum_f * sum_f)) / (n * (n - 1));
-            float dispersion = variance / mean;
-            float background_threshold = 1 + n_sig_b * sqrt(2.0f / (n - 1));
-            bool not_background = dispersion > background_threshold;
-            float signal_threshold = mean + n_sig_s * sqrt(mean);
-            bool is_signal = this_pixel > signal_threshold;
+        float mean = sum_f / n;
+        float variance = (n * sumsq_f - (sum_f * sum_f)) / (n * (n - 1));
+        float dispersion = variance / mean;
 
-            result_mask[x + mask_pitch * y] = not_background && is_signal;
-        } else {
-            result_mask[x + mask_pitch * y] = 0;
-        }
+        // Compute the background threshold and signal threshold
+        float background_threshold = 1 + n_sig_b * sqrt(2.0f / (n - 1));
+        bool not_background = dispersion > background_threshold;
+        float signal_threshold = mean + n_sig_s * sqrt(mean);
+
+        // Check if the pixel is a strong pixel
+        bool is_signal = this_pixel > signal_threshold;
+
+        result_mask[x + mask_pitch * y] = not_background && is_signal;
+    } else {
+        result_mask[x + mask_pitch * y] = 0;
     }
 }
 
@@ -463,16 +466,12 @@ __global__ void compute_dispersion_threshold_kernel(pixel_t *image,
     image = image + (image_pitch * height * blockIdx.z);
     result_mask = result_mask + (mask_pitch * height * blockIdx.z);
 
-    auto block = cg::this_thread_block();
-
-    // Initialize variables for computing the local sum and count
-    uint sum = 0;
-    size_t sumsq = 0;
-    uint8_t n = 0;
-
     // Calculate the pixel coordinates
+    auto block = cg::this_thread_block();
     int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
     int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
+
+    if (x >= width || y >= height) return;  // Out of bounds guard
 
     // Calculate the index of the pixel in the image and mask data
     int index = y * image_pitch + x;
@@ -480,6 +479,11 @@ __global__ void compute_dispersion_threshold_kernel(pixel_t *image,
 
     // Check if the pixel is masked and below the maximum valid pixel value
     bool px_is_valid = mask[index] != 0 && this_pixel <= max_valid_pixel_value;
+
+    // Initialize variables for computing the local sum and count
+    uint sum = 0;
+    size_t sumsq = 0;
+    uint8_t n = 0;
 
     for (int row = max(0, y - kernel_height); row < min(y + kernel_height + 1, height);
          ++row) {
@@ -498,22 +502,23 @@ __global__ void compute_dispersion_threshold_kernel(pixel_t *image,
         }
     }
 
-    if (x < width && y < height) {
-        // Calculate the thresholding
-        if (px_is_valid && n > 1) {
-            float sum_f = static_cast<float>(sum);
-            float sumsq_f = static_cast<float>(sumsq);
+    // Calculate the thresholding
+    if (px_is_valid && n > 1) {
+        // Compute local mean and variance
+        float sum_f = static_cast<float>(sum);
+        float sumsq_f = static_cast<float>(sumsq);
 
-            float mean = sum_f / n;
-            float variance = (n * sumsq_f - (sum_f * sum_f)) / (n * (n - 1));
-            float dispersion = variance / mean;
-            float background_threshold = 1 + n_sig_b * sqrt(2.0f / (n - 1));
-            bool not_background = dispersion > background_threshold;
+        float mean = sum_f / n;
+        float variance = (n * sumsq_f - (sum_f * sum_f)) / (n * (n - 1));
+        float dispersion = variance / mean;
 
-            result_mask[x + mask_pitch * y] = not_background;
-        } else {
-            result_mask[x + mask_pitch * y] = 0;
-        }
+        // Compute the background threshold
+        float background_threshold = 1 + n_sig_b * sqrt(2.0f / (n - 1));
+        bool not_background = dispersion > background_threshold;
+
+        result_mask[x + mask_pitch * y] = not_background;
+    } else {
+        result_mask[x + mask_pitch * y] = 0;
     }
 }
 
@@ -548,15 +553,12 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
     image = image + (image_pitch * height * blockIdx.z);
     result_mask = result_mask + (mask_pitch * height * blockIdx.z);
 
-    auto block = cg::this_thread_block();
-
-    // Initialize variables for computing the local sum and count
-    uint sum = 0;
-    uint8_t n = 0;
-
     // Calculate the pixel coordinates
+    auto block = cg::this_thread_block();
     int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
     int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
+
+    if (x >= width || y >= height) return;  // Out of bounds guard
 
     // Calculate the index of the pixel in the image and mask data
     int index = y * image_pitch + x;
@@ -564,6 +566,10 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
 
     // Check if the pixel is masked and below the maximum valid pixel value
     bool px_is_valid = mask[index] != 0 && this_pixel <= max_valid_pixel_value;
+
+    // Initialize variables for computing the local sum and count
+    uint sum = 0;
+    uint8_t n = 0;
 
     for (int row = max(0, y - kernel_height); row < min(y + kernel_height + 1, height);
          ++row) {
@@ -581,20 +587,18 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
         }
     }
 
-    if (x < width && y < height) {
-        // Calculate the thresholding
-        if (px_is_valid && n > 1) {
-            float sum_f = static_cast<float>(sum);
+    // Calculate the thresholding
+    if (px_is_valid && n > 1) {
+        float sum_f = static_cast<float>(sum);
 
-            bool disp_mask = dispersion_mask[index] != 0;
-            bool global_mask = image[index] > threshold;
-            float mean = sum_f / n;
-            bool local_mask = image[index] >= (mean + n_sig_s * sqrtf(mean));
+        bool disp_mask = dispersion_mask[index] != 0;
+        bool global_mask = image[index] > threshold;
+        float mean = sum_f / n;
+        bool local_mask = image[index] >= (mean + n_sig_s * sqrtf(mean));
 
-            result_mask[index] = disp_mask && global_mask && local_mask;
-        } else {
-            result_mask[index] = 0;
-        }
+        result_mask[index] = disp_mask && global_mask && local_mask;
+    } else {
+        result_mask[index] = 0;
     }
 }
 #pragma endregion Spotfinding Kernel
