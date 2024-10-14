@@ -558,6 +558,8 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
                                                uint8_t *result_mask,
                                                size_t image_pitch,
                                                size_t mask_pitch,
+                                               size_t dispersion_mask_pitch,
+                                               size_t result_mask_pitch,
                                                int width,
                                                int height,
                                                pixel_t max_valid_pixel_value,
@@ -576,12 +578,11 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
 
     if (x >= width || y >= height) return;  // Out of bounds guard
 
-    // Calculate the index of the pixel in the image and mask data
-    int index = y * image_pitch + x;
-    pixel_t this_pixel = image[index];
+    pixel_t this_pixel = image[y * image_pitch + x];
 
     // Check if the pixel is masked and below the maximum valid pixel value
-    bool px_is_valid = mask[index] != 0 && this_pixel <= max_valid_pixel_value;
+    bool px_is_valid =
+      mask[y * mask_pitch + x] != 0 && this_pixel <= max_valid_pixel_value;
 
     // Initialize variables for computing the local sum and count
     uint sum = 0;
@@ -612,14 +613,14 @@ __global__ void compute_final_threshold_kernel(pixel_t *image,
     if (px_is_valid && n > 1) {
         float sum_f = static_cast<float>(sum);
 
-        bool disp_mask = dispersion_mask[index] != 0;
-        bool global_mask = image[index] > threshold;
+        bool disp_mask = dispersion_mask[y * dispersion_mask_pitch + x];
+        bool global_mask = image[y * image_pitch + x] > threshold;
         float mean = sum_f / n;
-        bool local_mask = image[index] >= (mean + n_sig_s * sqrtf(mean));
+        bool local_mask = image[y * image_pitch + x] >= (mean + n_sig_s * sqrtf(mean));
 
-        result_mask[index] = disp_mask && global_mask && local_mask;
+        result_mask[y * result_mask_pitch + x] = disp_mask && global_mask && local_mask;
     } else {
-        result_mask[index] = 0;
+        result_mask[y * result_mask_pitch + x] = 0;
     }
 }
 #pragma endregion Spotfinding Kernel
@@ -773,8 +774,13 @@ void call_do_spotfinding_extended(dim3 blocks,
             // Write to PNG
             {
                 // Function to transform the pixel values: if non-zero, set to 255, otherwise set to 0
-                auto invert_pixel = [](uint8_t pixel) -> uint8_t {
-                    return pixel ? 255 : 0;
+                auto convert_pixel = [](uint8_t pixel) -> uint8_t {
+                    // return pixel ? 255 : 0;
+                    if (pixel == MASKED_PIXEL) {
+                        return 0;
+                    } else {  // if (pixel == VALID_PIXEL)
+                        return 255;
+                    }
                 };
 
                 // Usage in your existing code
@@ -785,7 +791,7 @@ void call_do_spotfinding_extended(dim3 blocks,
                   height,                           // Height of the image
                   stream,                           // CUDA stream
                   "first_pass_dispersion_result",   // Output filename
-                  invert_pixel                      // Pixel transformation function
+                  convert_pixel                     // Pixel transformation function
                 );
             }
             // Write to TXT
@@ -836,9 +842,12 @@ void call_do_spotfinding_extended(dim3 blocks,
 
         // Print the erosion result if needed
         if (do_writeout) {
-            // Function to transform the pixel values: if non-zero, set to 0, otherwise set to 255
-            auto invert_pixel = [](uint8_t pixel) -> uint8_t {
-                return pixel ? 0 : 255;
+            auto show_masked = [](uint8_t pixel) -> uint8_t {
+                if (pixel == MASKED_PIXEL) {
+                    return 255;
+                } else {  // if (pixel == VALID_PIXEL)
+                    return 0;
+                }
             };
 
             save_device_data_to_png(
@@ -848,7 +857,7 @@ void call_do_spotfinding_extended(dim3 blocks,
               height,                           // Height of the image
               stream,                           // CUDA stream
               "eroded_dispersion_result",       // Output filename
-              invert_pixel                      // Pixel transformation function
+              show_masked                       // Pixel transformation function
             );
         }
     }
@@ -869,6 +878,8 @@ void call_do_spotfinding_extended(dim3 blocks,
           result_strong->get(),       // Output result mask pointer
           image.pitch,                // Image pitch
           mask.pitch,                 // Mask pitch
+          d_dispersion_mask.pitch,    // Dispersion mask pitch
+          result_strong->pitch,       // Output result mask pitch
           width,                      // Image width
           height,                     // Image height
           max_valid_pixel_value,      // Maximum valid pixel value
@@ -883,9 +894,12 @@ void call_do_spotfinding_extended(dim3 blocks,
         printf("Second pass complete\n");
         // Optional: Write out the final result if needed
         if (do_writeout) {
-            // Function to transform the pixel values: if non-zero, set to 0, otherwise set to 255
-            auto invert_pixel = [](uint8_t pixel) -> uint8_t {
-                return pixel ? 0 : 255;
+            auto convert_pixel = [](uint8_t pixel) -> uint8_t {
+                if (pixel == VALID_PIXEL) {
+                    return 255;
+                } else {
+                    return 0;
+                }
             };
 
             save_device_data_to_png(
@@ -895,7 +909,7 @@ void call_do_spotfinding_extended(dim3 blocks,
               height,                             // Height of the image
               stream,                             // CUDA stream
               "final_extended_threshold_result",  // Output filename
-              invert_pixel                        // Pixel transformation function
+              convert_pixel                       // Pixel transformation function
             );
 
             auto is_valid_pixel = [](uint8_t pixel) { return pixel != 0; };
