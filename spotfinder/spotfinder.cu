@@ -28,26 +28,26 @@ namespace cg = cooperative_groups;
  * @param pixel_size_y The pixel size of the detector in the y-direction in m
  * @return The calculated distance from the beam center in m
 */
-__device__ float get_distance_from_centre(float x,
+__device__ float get_distance_from_center(float x,
                                           float y,
-                                          float centre_x,
-                                          float centre_y,
+                                          float center_x,
+                                          float center_y,
                                           float pixel_size_x,
                                           float pixel_size_y) {
     /*
      * Since this calculation is for a broad, general exclusion, we can
      * use basic Pythagoras to calculate the distance from the center.
     */
-    // float dx = (x - centre_x) * pixel_size_x;
-    // float dy = (y - centre_y) * pixel_size_y;
+    // float dx = (x - center_x) * pixel_size_x;
+    // float dy = (y - center_y) * pixel_size_y;
 
     /*
      * TODO: Check if the calculation should be done from the center of the pixel
      * or the corner of the pixel. The current calculation is from the center.
      * If the calculation should be from the corner, the calculation should be:
     */
-    float dx = ((x + 0.5f) - centre_x) * pixel_size_x;
-    float dy = ((y + 0.5f) - centre_y) * pixel_size_y;
+    float dx = ((x + 0.5f) - center_x) * pixel_size_x;
+    float dy = ((y + 0.5f) - center_y) * pixel_size_y;
     return sqrtf(dx * dx + dy * dy);
 }
 
@@ -62,12 +62,12 @@ __device__ float get_distance_from_centre(float x,
 */
 __device__ float get_resolution(float wavelength,
                                 float distance_to_detector,
-                                float distance_from_centre) {
+                                float distance_from_center) {
     /*
      * Since the angle calculated is, in fact, 2ϴ, we halve to get the
      * proper value of ϴ
     */
-    float theta = 0.5 * atanf(distance_from_centre / distance_to_detector);
+    float theta = 0.5 * atanf(distance_from_center / distance_to_detector);
     return wavelength / (2 * sinf(theta));
 }
 #pragma endregion Res Mask Functions
@@ -83,7 +83,7 @@ __device__ float get_resolution(float wavelength,
  * the pixel to 0 in the mask data.
  *
  * @param mask Pointer to the mask data indicating valid pixels.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param mask_pitch The pitch of the mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param wavelength The wavelength of the X-ray beam in Ångströms.
@@ -120,10 +120,10 @@ __global__ void apply_resolution_mask(uint8_t *mask,
         return;
     }
 
-    float distance_from_centre = get_distance_from_centre(
+    float distance_from_center = get_distance_from_center(
       x, y, beam_center_x, beam_center_y, pixel_size_x, pixel_size_y);
     float resolution =
-      get_resolution(wavelength, distance_to_detector, distance_from_centre);
+      get_resolution(wavelength, distance_to_detector, distance_from_center);
 
     // Check if dmin is set and if the resolution is below it
     if (dmin > 0 && resolution < dmin) {
@@ -185,14 +185,14 @@ void call_apply_resolution_mask(dim3 blocks,
  * @param image Device pointer to the image data.
  * @param mask Device pointer to the mask data indicating valid pixels.
  * @param background_mask (Optional) Device pointer to the background mask data. If nullptr, all pixels are considered for background calculation.
- * @param image_pitch The pitch (width in bytes) of the image data.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param image_pitch The pitch of the image data.
+ * @param mask_pitch The pitch of the mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param x The x-coordinate of the current pixel.
  * @param y The y-coordinate of the current pixel.
- * @param kernel_width The radius of the kernel in the x-direction.
- * @param kernel_height The radius of the kernel in the y-direction.
+ * @param kernel_width The half-width of the kernel (kernel size in x-direction).
+ * @param kernel_height The half-height of the kernel (kernel size in y-direction).
  * @param sum (Output) The sum of the valid pixels in the neighborhood.
  * @param sumsq (Output) The sum of squares of the valid pixels in the neighborhood.
  * @param n (Output) The count of valid pixels in the neighborhood.
@@ -274,10 +274,10 @@ __device__ bool is_strong_pixel(uint sum, size_t sumsq, uint8_t n, pixel_t this_
  * This kernel identifies strong pixels in the image based on analysis of the pixel neighborhood.
  * 
  * @param image Device pointer to the image data.
- * @param image_pitch The pitch (width in bytes) of the image data.
+ * @param image_pitch The pitch of the image data.
  * @param mask Device pointer to the mask data indicating valid pixels.
  * @param background_mask (Optional) Device pointer to the background mask data. If nullptr, all pixels are considered for background calculation.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param mask_pitch The pitch of the mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param max_valid_pixel_value The maximum valid trusted pixel value.
@@ -355,8 +355,9 @@ __global__ void do_spotfinding_dispersion(pixel_t *image,
  * @param image Pointer to the input image data.
  * @param mask Pointer to the mask data indicating valid pixels.
  * @param result_mask Pointer to the output mask data where results will be stored.
- * @param image_pitch The pitch (width in bytes) of the image data.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param image_pitch The pitch of the image data.
+ * @param mask_pitch The pitch of the mask data.
+ * @param result_pitch The pitch of the result mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param max_valid_pixel_value The maximum valid trusted pixel value.
@@ -451,8 +452,9 @@ __global__ void compute_threshold_kernel(pixel_t *image,
  * @param image Pointer to the input image data.
  * @param mask Pointer to the mask data indicating valid pixels.
  * @param result_mask Pointer to the output mask data where results will be stored.
- * @param image_pitch The pitch (width in bytes) of the image data.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param image_pitch The pitch of the image data.
+ * @param mask_pitch The pitch of the mask data.
+ * @param result_pitch The pitch of the result mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param max_valid_pixel_value The maximum valid trusted pixel value.
@@ -552,8 +554,10 @@ __global__ void compute_dispersion_threshold_kernel(pixel_t *image,
  * @param mask Pointer to the mask data indicating valid pixels.
  * @param dispersion_mask Pointer to the dispersion mask used for extended algorithm.
  * @param result_mask Pointer to the output mask data where results will be stored.
- * @param image_pitch The pitch (width in bytes) of the image data.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param image_pitch The pitch of the image data.
+ * @param mask_pitch The pitch of the mask data.
+ * @param dispersion_mask_pitch The pitch of the dispersion mask data.
+ * @param result_mask_pitch The pitch of the result mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param max_valid_pixel_value The maximum valid trusted pixel value.
