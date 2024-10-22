@@ -11,7 +11,7 @@ namespace cg = cooperative_groups;
  * @brief Load central pixels into shared memory.
  * @param block The cooperative group for the current block.
  * @param erosion_mask Pointer to the erosion_mask data.
- * @param shared_mask Pointer to the shared memory buffer.
+ * @param shared_erosion_mask Pointer to the shared memory buffer.
  * @param erosion_mask_pitch The pitch (width in bytes) of the erosion_mask data.
  * @param width The width of the image.
  * @param height The height of the image.
@@ -19,7 +19,7 @@ namespace cg = cooperative_groups;
  */
 __device__ void load_central_pixels(cg::thread_block block,
                                     const uint8_t *erosion_mask,
-                                    uint8_t *shared_mask,
+                                    uint8_t *shared_erosion_mask,
                                     size_t erosion_mask_pitch,
                                     int width,
                                     int height,
@@ -32,10 +32,10 @@ __device__ void load_central_pixels(cg::thread_block block,
 
     // Load central pixels into shared memory
     if (x < width && y < height) {
-        shared_mask[local_y * shared_width + local_x] =
+        shared_erosion_mask[local_y * shared_width + local_x] =
           erosion_mask[y * erosion_mask_pitch + x];
     } else {
-        shared_mask[local_y * shared_width + local_x] = VALID_PIXEL;
+        shared_erosion_mask[local_y * shared_width + local_x] = VALID_PIXEL;
     }
 }
 
@@ -43,7 +43,7 @@ __device__ void load_central_pixels(cg::thread_block block,
  * @brief Load border pixels into shared memory.
  * @param block The cooperative group for the current block.
  * @param erosion_mask Pointer to the erosion_mask data.
- * @param shared_mask Pointer to the shared memory buffer.
+ * @param shared_erosion_mask Pointer to the shared memory buffer.
  * @param erosion_mask_pitch The pitch (width in bytes) of the erosion_mask data.
  * @param width The width of the image.
  * @param height The height of the image.
@@ -51,7 +51,7 @@ __device__ void load_central_pixels(cg::thread_block block,
  */
 __device__ void load_border_pixels(cg::thread_block block,
                                    const uint8_t *erosion_mask,
-                                   uint8_t *shared_mask,
+                                   uint8_t *shared_erosion_mask,
                                    size_t erosion_mask_pitch,
                                    int width,
                                    int height,
@@ -74,13 +74,13 @@ __device__ void load_border_pixels(cg::thread_block block,
         // Compute the clamped global y-coordinate for the top border pixel.
         int top_border_y = max(global_y - radius, 0);
         // Store the top border pixel into shared memory.
-        shared_mask[(block.thread_index().y) * shared_width + local_x] =
+        shared_erosion_mask[(block.thread_index().y) * shared_width + local_x] =
           erosion_mask[top_border_y * erosion_mask_pitch + global_x];
 
         // Compute the clamped global y-coordinate for the bottom border pixel.
         int bottom_border_y = min(global_y + block.group_dim().y, height - 1);
         // Store the bottom border pixel into shared memory.
-        shared_mask[(local_y + block.group_dim().y) * shared_width + local_x] =
+        shared_erosion_mask[(local_y + block.group_dim().y) * shared_width + local_x] =
           erosion_mask[bottom_border_y * erosion_mask_pitch + global_x];
     }
 
@@ -91,13 +91,13 @@ __device__ void load_border_pixels(cg::thread_block block,
         // Compute the clamped global x-coordinate for the left border pixel.
         int left_border_x = max(global_x - radius, 0);
         // Store the left border pixel into shared memory.
-        shared_mask[local_y * shared_width + block.thread_index().x] =
+        shared_erosion_mask[local_y * shared_width + block.thread_index().x] =
           erosion_mask[global_y * erosion_mask_pitch + left_border_x];
 
         // Compute the clamped global x-coordinate for the right border pixel.
         int right_border_x = min(global_x + block.group_dim().x, width - 1);
         // Store the right border pixel into shared memory.
-        shared_mask[local_y * shared_width + (local_x + block.group_dim().x)] =
+        shared_erosion_mask[local_y * shared_width + (local_x + block.group_dim().x)] =
           erosion_mask[global_y * erosion_mask_pitch + right_border_x];
     }
 
@@ -110,31 +110,32 @@ __device__ void load_border_pixels(cg::thread_block block,
         int top_left_x = max(global_x - radius, 0);
         int top_left_y = max(global_y - radius, 0);
         // Store the top-left corner pixel into shared memory.
-        shared_mask[block.thread_index().y * shared_width + block.thread_index().x] =
+        shared_erosion_mask[block.thread_index().y * shared_width
+                            + block.thread_index().x] =
           erosion_mask[top_left_y * erosion_mask_pitch + top_left_x];
 
         // Compute the clamped global coordinates for the top-right corner pixel.
         int top_right_x = min(global_x + block.group_dim().x, width - 1);
         int top_right_y = max(global_y - radius, 0);
         // Store the top-right corner pixel into shared memory.
-        shared_mask[block.thread_index().y * shared_width
-                    + (local_x + block.group_dim().x)] =
+        shared_erosion_mask[block.thread_index().y * shared_width
+                            + (local_x + block.group_dim().x)] =
           erosion_mask[top_right_y * erosion_mask_pitch + top_right_x];
 
         // Compute the clamped global coordinates for the bottom-left corner pixel.
         int bottom_left_x = max(global_x - radius, 0);
         int bottom_left_y = min(global_y + block.group_dim().y, height - 1);
         // Store the bottom-left corner pixel into shared memory.
-        shared_mask[(local_y + block.group_dim().y) * shared_width
-                    + block.thread_index().x] =
+        shared_erosion_mask[(local_y + block.group_dim().y) * shared_width
+                            + block.thread_index().x] =
           erosion_mask[bottom_left_y * erosion_mask_pitch + bottom_left_x];
 
         // Compute the clamped global coordinates for the bottom-right corner pixel.
         int bottom_right_x = min(global_x + block.group_dim().x, width - 1);
         int bottom_right_y = min(global_y + block.group_dim().y, height - 1);
         // Store the bottom-right corner pixel into shared memory.
-        shared_mask[(local_y + block.group_dim().y) * shared_width
-                    + (local_x + block.group_dim().x)] =
+        shared_erosion_mask[(local_y + block.group_dim().y) * shared_width
+                            + (local_x + block.group_dim().x)] =
           erosion_mask[bottom_right_y * erosion_mask_pitch + bottom_right_x];
     }
 }
@@ -142,13 +143,13 @@ __device__ void load_border_pixels(cg::thread_block block,
 /**
  * @brief Determine if the current pixel should be erased based on the erosion_mask.
  * @param block The cooperative group for the current block.
- * @param shared_mask Pointer to the shared memory buffer.
+ * @param shared_erosion_mask Pointer to the shared memory buffer.
  * @param radius The radius around each masked pixel to be considered.
  * @param distance_threshold The maximum Chebyshev distance for erasing the current pixel.
  * @return True if the current pixel should be erased, false otherwise.
  */
 __device__ bool determine_erasure(cg::thread_block block,
-                                  const uint8_t *shared_mask,
+                                  const uint8_t *shared_erosion_mask,
                                   int radius,
                                   int distance_threshold) {
     int local_x = block.thread_index().x + radius;
@@ -158,7 +159,7 @@ __device__ bool determine_erasure(cg::thread_block block,
     bool should_erase = false;
     for (int i = -radius; i <= radius; ++i) {
         for (int j = -radius; j <= radius; ++j) {
-            if (shared_mask[(local_y + j) * shared_width + (local_x + i)]
+            if (shared_erosion_mask[(local_y + j) * shared_width + (local_x + i)]
                 == MASKED_PIXEL) {
                 int chebyshev_distance = max(abs(i), abs(j));
                 if (chebyshev_distance <= distance_threshold) {
@@ -174,7 +175,7 @@ __device__ bool determine_erasure(cg::thread_block block,
     return should_erase;
 }
 
-// __global__ void determine_erasure_kernel(const uint8_t *shared_mask,
+// __global__ void determine_erasure_kernel(const uint8_t *shared_erosion_mask,
 //                                          int shared_width,
 //                                          int local_x,
 //                                          int local_y,
@@ -184,7 +185,7 @@ __device__ bool determine_erasure(cg::thread_block block,
 //     int i = threadIdx.x - radius;
 //     int j = threadIdx.y - radius;
 
-//     if (shared_mask[(local_y + j) * shared_width + (local_x + i)] == MASKED_PIXEL) {
+//     if (shared_erosion_mask[(local_y + j) * shared_width + (local_x + i)] == MASKED_PIXEL) {
 //         int chebyshev_distance = max(abs(i), abs(j));
 //         if (chebyshev_distance <= distance_threshold) {
 //             atomicExch(should_erase, 1u);
@@ -194,13 +195,13 @@ __device__ bool determine_erasure(cg::thread_block block,
 
 /**
  * @brief Device function to determine if the current pixel should be erased using dynamic parallelism.
- * @param shared_mask Pointer to the shared memory buffer.
+ * @param shared_erosion_mask Pointer to the shared memory buffer.
  * @param threadParams Thread-specific information for the current thread.
  * @param radius The radius around each masked pixel to be considered.
  * @param distance_threshold The maximum Chebyshev distance for erasing the current pixel.
  * @return True if the current pixel should be erased, false otherwise.
  */
-// __device__ bool launch_determine_erasure_kernel(const uint8_t *shared_mask,
+// __device__ bool launch_determine_erasure_kernel(const uint8_t *shared_erosion_mask,
 //                                                 const KernelThreadParams &threadParams,
 //                                                 int radius,
 //                                                 int distance_threshold) {
@@ -211,7 +212,7 @@ __device__ bool determine_erasure(cg::thread_block block,
 
 //     // Launch the erasure determination kernel
 //     dim3 erasure_block_size(2 * radius + 1, 2 * radius + 1);
-//     determine_erasure_kernel<<<1, erasure_block_size>>>(shared_mask,
+//     determine_erasure_kernel<<<1, erasure_block_size>>>(shared_erosion_mask,
 //                                                         threadParams.shared_width,
 //                                                         threadParams.local_x,
 //                                                         threadParams.local_y,
@@ -252,18 +253,28 @@ __global__ void erosion_kernel(
   int height,
   uint8_t radius) {
     // Declare shared memory to store a local copy of the erosion_mask for the block
-    extern __shared__ uint8_t shared_mask[];
+    extern __shared__ uint8_t shared_erosion_mask[];
 
     // Create a cooperative group for the current block
     cg::thread_block block = cg::this_thread_block();
 
     // Load central pixels
-    load_central_pixels(
-      block, erosion_mask, shared_mask, erosion_mask_pitch, width, height, radius);
+    load_central_pixels(block,
+                        erosion_mask,
+                        shared_erosion_mask,
+                        erosion_mask_pitch,
+                        width,
+                        height,
+                        radius);
 
     // Load border pixels
-    load_border_pixels(
-      block, erosion_mask, shared_mask, erosion_mask_pitch, width, height, radius);
+    load_border_pixels(block,
+                       erosion_mask,
+                       shared_erosion_mask,
+                       erosion_mask_pitch,
+                       width,
+                       height,
+                       radius);
 
     // Synchronize threads to ensure all shared memory is loaded
     block.sync();
@@ -297,13 +308,13 @@ __global__ void erosion_kernel(
     constexpr uint8_t chebyshev_distance_threshold = 2;
 
     // Determine if the current pixel should be erased
-    bool should_erase =
-      determine_erasure(block, shared_mask, radius, chebyshev_distance_threshold);
+    bool should_erase = determine_erasure(
+      block, shared_erosion_mask, radius, chebyshev_distance_threshold);
     // DIALS uses 2 as the Chebyshev distance threshold for erasing pixels
 
     // dynamic parrelism based
     // bool should_erase_gpu =
-    //   launch_determine_erasure_kernel(shared_mask,
+    //   launch_determine_erasure_kernel(shared_erosion_mask,
     //                                   threadParams,
     //                                   radius,
     //                                   2);  // Use 2 as the Chebyshev distance threshold
