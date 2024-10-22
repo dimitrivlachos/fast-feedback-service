@@ -56,20 +56,19 @@ __device__ void load_border_pixels(cg::thread_block block,
                                    int width,
                                    int height,
                                    int radius) {
-    // Calculate the global x and y coordinates of the current thread.
-    int global_x = block.group_index().x * block.group_dim().x + block.thread_index().x;
-    int global_y = block.group_index().y * block.group_dim().y + block.thread_index().y;
+    // Calculate the global x and y coordinates for the current thread
+    int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
+    int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
 
-    // Calculate the local x and y coordinates in shared memory, accounting for the radius.
+    // Calculate the x and y coordinates in shared memory, including the border
     int local_x = block.thread_index().x + radius;
     int local_y = block.thread_index().y + radius;
 
-    // Calculate the width and height of the shared memory buffer, including the border regions.
+    // Calculate the width and height of the shared memory buffer, including the border
     int shared_width = block.group_dim().x + 2 * radius;
     int shared_height = block.group_dim().y + 2 * radius;
 
-    // Load the top and bottom borders into shared memory.
-    // Only threads with y indices less than the radius participate.
+    // Load top and bottom borders.
     if (block.thread_index().y < radius) {  // If the thread is in the top border region
         // Compute the clamped global y-coordinate for the top border pixel.
         int top_border_y = max(global_y - radius, 0);
@@ -84,8 +83,7 @@ __device__ void load_border_pixels(cg::thread_block block,
           erosion_mask[bottom_border_y * erosion_mask_pitch + global_x];
     }
 
-    // Load the left and right borders into shared memory.
-    // Only threads with x indices less than the radius participate.
+    // Load left and right borders.
     if (block.thread_index().x
         < radius) {  // If the thread is in the left border region
         // Compute the clamped global x-coordinate for the left border pixel.
