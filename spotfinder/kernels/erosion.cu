@@ -10,17 +10,17 @@ namespace cg = cooperative_groups;
 /**
  * @brief Load central pixels into shared memory.
  * @param block The cooperative group for the current block.
- * @param mask Pointer to the mask data.
+ * @param erosion_mask Pointer to the erosion_mask data.
  * @param shared_mask Pointer to the shared memory buffer.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param erosion_mask_pitch The pitch (width in bytes) of the erosion_mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param radius The radius around each masked pixel to be considered.
  */
 __device__ void load_central_pixels(cg::thread_block block,
-                                    const uint8_t *mask,
+                                    const uint8_t *erosion_mask,
                                     uint8_t *shared_mask,
-                                    size_t mask_pitch,
+                                    size_t erosion_mask_pitch,
                                     int width,
                                     int height,
                                     int radius) {
@@ -32,7 +32,8 @@ __device__ void load_central_pixels(cg::thread_block block,
 
     // Load central pixels into shared memory
     if (x < width && y < height) {
-        shared_mask[local_y * shared_width + local_x] = mask[y * mask_pitch + x];
+        shared_mask[local_y * shared_width + local_x] =
+          erosion_mask[y * erosion_mask_pitch + x];
     } else {
         shared_mask[local_y * shared_width + local_x] = VALID_PIXEL;
     }
@@ -41,17 +42,17 @@ __device__ void load_central_pixels(cg::thread_block block,
 /**
  * @brief Load border pixels into shared memory.
  * @param block The cooperative group for the current block.
- * @param mask Pointer to the mask data.
+ * @param erosion_mask Pointer to the erosion_mask data.
  * @param shared_mask Pointer to the shared memory buffer.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param erosion_mask_pitch The pitch (width in bytes) of the erosion_mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param radius The radius around each masked pixel to be considered.
  */
 __device__ void load_border_pixels(cg::thread_block block,
-                                   const uint8_t *mask,
+                                   const uint8_t *erosion_mask,
                                    uint8_t *shared_mask,
-                                   size_t mask_pitch,
+                                   size_t erosion_mask_pitch,
                                    int width,
                                    int height,
                                    int radius) {
@@ -74,13 +75,13 @@ __device__ void load_border_pixels(cg::thread_block block,
         int top_border_y = max(global_y - radius, 0);
         // Store the top border pixel into shared memory.
         shared_mask[(block.thread_index().y) * shared_width + local_x] =
-          mask[top_border_y * mask_pitch + global_x];
+          erosion_mask[top_border_y * erosion_mask_pitch + global_x];
 
         // Compute the clamped global y-coordinate for the bottom border pixel.
         int bottom_border_y = min(global_y + block.group_dim().y, height - 1);
         // Store the bottom border pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width + local_x] =
-          mask[bottom_border_y * mask_pitch + global_x];
+          erosion_mask[bottom_border_y * erosion_mask_pitch + global_x];
     }
 
     // Load the left and right borders into shared memory.
@@ -91,13 +92,13 @@ __device__ void load_border_pixels(cg::thread_block block,
         int left_border_x = max(global_x - radius, 0);
         // Store the left border pixel into shared memory.
         shared_mask[local_y * shared_width + block.thread_index().x] =
-          mask[global_y * mask_pitch + left_border_x];
+          erosion_mask[global_y * erosion_mask_pitch + left_border_x];
 
         // Compute the clamped global x-coordinate for the right border pixel.
         int right_border_x = min(global_x + block.group_dim().x, width - 1);
         // Store the right border pixel into shared memory.
         shared_mask[local_y * shared_width + (local_x + block.group_dim().x)] =
-          mask[global_y * mask_pitch + right_border_x];
+          erosion_mask[global_y * erosion_mask_pitch + right_border_x];
     }
 
     // Load corner pixels into shared memory.
@@ -110,7 +111,7 @@ __device__ void load_border_pixels(cg::thread_block block,
         int top_left_y = max(global_y - radius, 0);
         // Store the top-left corner pixel into shared memory.
         shared_mask[block.thread_index().y * shared_width + block.thread_index().x] =
-          mask[top_left_y * mask_pitch + top_left_x];
+          erosion_mask[top_left_y * erosion_mask_pitch + top_left_x];
 
         // Compute the clamped global coordinates for the top-right corner pixel.
         int top_right_x = min(global_x + block.group_dim().x, width - 1);
@@ -118,7 +119,7 @@ __device__ void load_border_pixels(cg::thread_block block,
         // Store the top-right corner pixel into shared memory.
         shared_mask[block.thread_index().y * shared_width
                     + (local_x + block.group_dim().x)] =
-          mask[top_right_y * mask_pitch + top_right_x];
+          erosion_mask[top_right_y * erosion_mask_pitch + top_right_x];
 
         // Compute the clamped global coordinates for the bottom-left corner pixel.
         int bottom_left_x = max(global_x - radius, 0);
@@ -126,7 +127,7 @@ __device__ void load_border_pixels(cg::thread_block block,
         // Store the bottom-left corner pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width
                     + block.thread_index().x] =
-          mask[bottom_left_y * mask_pitch + bottom_left_x];
+          erosion_mask[bottom_left_y * erosion_mask_pitch + bottom_left_x];
 
         // Compute the clamped global coordinates for the bottom-right corner pixel.
         int bottom_right_x = min(global_x + block.group_dim().x, width - 1);
@@ -134,12 +135,12 @@ __device__ void load_border_pixels(cg::thread_block block,
         // Store the bottom-right corner pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width
                     + (local_x + block.group_dim().x)] =
-          mask[bottom_right_y * mask_pitch + bottom_right_x];
+          erosion_mask[bottom_right_y * erosion_mask_pitch + bottom_right_x];
     }
 }
 
 /**
- * @brief Determine if the current pixel should be erased based on the mask.
+ * @brief Determine if the current pixel should be erased based on the erosion_mask.
  * @param block The cooperative group for the current block.
  * @param shared_mask Pointer to the shared memory buffer.
  * @param radius The radius around each masked pixel to be considered.
@@ -232,35 +233,37 @@ __device__ bool determine_erasure(cg::thread_block block,
 
 #pragma region Erosion kernel(s)
 /**
- * @brief CUDA kernel to apply erosion based on the mask and update the erosion_mask.
+ * @brief CUDA kernel to apply erosion based on the erosion_mask and update the erosion_mask.
  * 
- * This kernel uses shared memory to store a local copy of the mask for each block.
+ * This kernel uses shared memory to store a local copy of the erosion_mask for each block.
  * 
- * @param mask Pointer to the mask data indicating valid pixels to be eroded.
- * @param mask_pitch The pitch (width in bytes) of the mask data.
+ * @param erosion_mask Pointer to the erosion_mask data indicating valid pixels to be eroded.
+ * @param erosion_mask_pitch The pitch (width in bytes) of the erosion_mask data.
  * @param width The width of the image.
  * @param height The height of the image.
  * @param radius The radius around each masked pixel to also be masked.
  */
 __global__ void erosion_kernel(
-  uint8_t __restrict__ *mask,
+  uint8_t __restrict__ *erosion_mask,
   // __restrict__ is a hint to the compiler that the two pointers are not
   // aliased, allowing the compiler to perform more agressive optimizations
-  size_t mask_pitch,
+  size_t erosion_mask_pitch,
   int width,
   int height,
   uint8_t radius) {
-    // Declare shared memory to store a local copy of the mask for the block
+    // Declare shared memory to store a local copy of the erosion_mask for the block
     extern __shared__ uint8_t shared_mask[];
 
     // Create a cooperative group for the current block
     cg::thread_block block = cg::this_thread_block();
 
     // Load central pixels
-    load_central_pixels(block, mask, shared_mask, mask_pitch, width, height, radius);
+    load_central_pixels(
+      block, erosion_mask, shared_mask, erosion_mask_pitch, width, height, radius);
 
     // Load border pixels
-    load_border_pixels(block, mask, shared_mask, mask_pitch, width, height, radius);
+    load_border_pixels(
+      block, erosion_mask, shared_mask, erosion_mask_pitch, width, height, radius);
 
     // Synchronize threads to ensure all shared memory is loaded
     block.sync();
@@ -286,8 +289,8 @@ __global__ void erosion_kernel(
      * We do not need to perform erosion on non-signal pixels, but we need them
      * to be marked as valid in order to allow the background calculation to proceed.
     */
-    if (mask[y * mask_pitch + x] == 0) {
-        mask[y * mask_pitch + x] = VALID_PIXEL;
+    if (erosion_mask[y * erosion_mask_pitch + x] == 0) {
+        erosion_mask[y * erosion_mask_pitch + x] = VALID_PIXEL;
         return;
     }
 
@@ -309,20 +312,21 @@ __global__ void erosion_kernel(
     if (should_erase) {
         /*
          * Erase the pixel from the background mask. This is done by setting the pixel
-         * as valid (i.e. not masked) in the mask data. This allows the pixel to be
+         * as valid (i.e. not masked) in the erosion_mask data. This allows the pixel to be
          * considered as a background pixel in the background calculation as it is not
          * considered part of the signal.
         */
-        mask[y * mask_pitch + x] = VALID_PIXEL;
+        erosion_mask[y * erosion_mask_pitch + x] = VALID_PIXEL;
     } else {
         /*
          * If the pixel should not be erased, this means that it is part of the signal.
-         * and needs to be marked as masked in the mask data. This prevents the pixel
+         * and needs to be marked as masked in the erosion_mask data. This prevents the pixel
          * from being considered as part of the background in the background calculation.
         */
 
         // Invert 'valid' signal spot to 'masked' background spots
-        mask[y * mask_pitch + x] = !mask[y * mask_pitch + x];
+        erosion_mask[y * erosion_mask_pitch + x] =
+          !erosion_mask[y * erosion_mask_pitch + x];
     }
 }
 #pragma endregion Kernel

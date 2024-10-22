@@ -562,6 +562,15 @@ void call_do_spotfinding_extended(dim3 blocks,
                                    first_pass_kernel_radius);
         cudaStreamSynchronize(stream);
 
+        // Check for CUDA errors
+        cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess) {
+            fmt::print(
+              stderr, "CUDA error in erosion_kernel: {}\n", cudaGetErrorString(error));
+        } else {
+            fmt::print("Erosion pass complete\n");
+        }
+
         // Print the erosion result if needed
         if (do_writeout) {
             // Write to PNG
