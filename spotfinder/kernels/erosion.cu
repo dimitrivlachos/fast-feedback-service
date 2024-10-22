@@ -55,73 +55,86 @@ __device__ void load_border_pixels(cg::thread_block block,
                                    int width,
                                    int height,
                                    int radius) {
-    // Calculate the global x and y coordinates for the current thread
-    int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
-    int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
+    // Calculate the global x and y coordinates of the current thread.
+    int global_x = block.group_index().x * block.group_dim().x + block.thread_index().x;
+    int global_y = block.group_index().y * block.group_dim().y + block.thread_index().y;
 
-    // Calculate the x and y coordinates in shared memory, including the border
+    // Calculate the local x and y coordinates in shared memory, accounting for the radius.
     int local_x = block.thread_index().x + radius;
     int local_y = block.thread_index().y + radius;
 
-    // Calculate the width and height of the shared memory buffer, including the border
+    // Calculate the width and height of the shared memory buffer, including the border regions.
     int shared_width = block.group_dim().x + 2 * radius;
     int shared_height = block.group_dim().y + 2 * radius;
 
-    // Load top and bottom borders.
+    // Load the top and bottom borders into shared memory.
+    // Only threads with y indices less than the radius participate.
     if (block.thread_index().y < radius) {  // If the thread is in the top border region
-        // Top border: Load pixels from the rows above the central block region into shared memory.
-        // Use max(y - radius, 0) to ensure that we don't read outside the image boundary.
-        int border_y = max(y - radius, 0);
+        // Compute the clamped global y-coordinate for the top border pixel.
+        int top_border_y = max(global_y - radius, 0);
+        // Store the top border pixel into shared memory.
         shared_mask[(block.thread_index().y) * shared_width + local_x] =
-          mask[border_y * mask_pitch + x];
+          mask[top_border_y * mask_pitch + global_x];
 
-        // Bottom border: Load pixels from the rows below the central block region into shared memory.
-        // Use min(y + block.group_dim().y, height - 1) to ensure that we don't read beyond the image.
-        border_y = min(y + block.group_dim().y, height - 1);
+        // Compute the clamped global y-coordinate for the bottom border pixel.
+        int bottom_border_y = min(global_y + block.group_dim().y, height - 1);
+        // Store the bottom border pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width + local_x] =
-          mask[border_y * mask_pitch + x];
+          mask[bottom_border_y * mask_pitch + global_x];
     }
 
-    // Load left and right borders.
+    // Load the left and right borders into shared memory.
+    // Only threads with x indices less than the radius participate.
     if (block.thread_index().x
         < radius) {  // If the thread is in the left border region
-        // Left border: Load pixels from columns to the left of the central block region into shared memory.
-        // Use max(x - radius, 0) to ensure that we don't read outside the image boundary.
-        int border_x = max(x - radius, 0);
+        // Compute the clamped global x-coordinate for the left border pixel.
+        int left_border_x = max(global_x - radius, 0);
+        // Store the left border pixel into shared memory.
         shared_mask[local_y * shared_width + block.thread_index().x] =
-          mask[y * mask_pitch + border_x];
+          mask[global_y * mask_pitch + left_border_x];
 
-        // Right border: Load pixels from columns to the right of the central block region into shared memory.
-        // Use min(x + block.group_dim().x, width - 1) to ensure that we don't read beyond the image.
-        border_x = min(x + block.group_dim().x, width - 1);
+        // Compute the clamped global x-coordinate for the right border pixel.
+        int right_border_x = min(global_x + block.group_dim().x, width - 1);
+        // Store the right border pixel into shared memory.
         shared_mask[local_y * shared_width + (local_x + block.group_dim().x)] =
-          mask[y * mask_pitch + border_x];
+          mask[global_y * mask_pitch + right_border_x];
     }
 
-    // Load corner pixels to fill in the gaps at the corners of the shared memory region.
-    // This ensures that the entire shared memory area surrounding the central region is populated.
-    if (block.thread_index().x < radius && block.thread_index().y < radius) {
-        // Top-left corner: Load the pixel at the intersection of the top row and left column.
-        int border_x = max(x - radius, 0);
-        int border_y = max(y - radius, 0);
+    // Load corner pixels into shared memory.
+    // Only threads with x and y indices less than the radius participate.
+    if (block.thread_index().x < radius
+        && block.thread_index().y
+             < radius) {  // If the thread is in the top-left corner region
+        // Compute the clamped global coordinates for the top-left corner pixel.
+        int top_left_x = max(global_x - radius, 0);
+        int top_left_y = max(global_y - radius, 0);
+        // Store the top-left corner pixel into shared memory.
         shared_mask[block.thread_index().y * shared_width + block.thread_index().x] =
-          mask[border_y * mask_pitch + border_x];
+          mask[top_left_y * mask_pitch + top_left_x];
 
-        // Top-right corner: Load the pixel at the intersection of the top row and right column.
-        border_x = min(x + block.group_dim().x, width - 1);
+        // Compute the clamped global coordinates for the top-right corner pixel.
+        int top_right_x = min(global_x + block.group_dim().x, width - 1);
+        int top_right_y = max(global_y - radius, 0);
+        // Store the top-right corner pixel into shared memory.
         shared_mask[block.thread_index().y * shared_width
                     + (local_x + block.group_dim().x)] =
-          mask[border_y * mask_pitch + border_x];
+          mask[top_right_y * mask_pitch + top_right_x];
 
-        // Bottom-left corner: Load the pixel at the intersection of the bottom row and left column.
-        border_y = min(y + block.group_dim().y, height - 1);
+        // Compute the clamped global coordinates for the bottom-left corner pixel.
+        int bottom_left_x = max(global_x - radius, 0);
+        int bottom_left_y = min(global_y + block.group_dim().y, height - 1);
+        // Store the bottom-left corner pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width
-                    + block.thread_index().x] = mask[border_y * mask_pitch + border_x];
+                    + block.thread_index().x] =
+          mask[bottom_left_y * mask_pitch + bottom_left_x];
 
-        // Bottom-right corner: Load the pixel at the intersection of the bottom row and right column.
+        // Compute the clamped global coordinates for the bottom-right corner pixel.
+        int bottom_right_x = min(global_x + block.group_dim().x, width - 1);
+        int bottom_right_y = min(global_y + block.group_dim().y, height - 1);
+        // Store the bottom-right corner pixel into shared memory.
         shared_mask[(local_y + block.group_dim().y) * shared_width
                     + (local_x + block.group_dim().x)] =
-          mask[border_y * mask_pitch + border_x];
+          mask[bottom_right_y * mask_pitch + bottom_right_x];
     }
 }
 
