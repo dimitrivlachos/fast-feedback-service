@@ -8,9 +8,6 @@
 // #include <bitshuffle.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
-#include <fmt/core.h>
-#include <fmt/os.h>
-#include <lodepng.h>
 
 #include "kernels/erosion.cuh"
 #include "kernels/thresholding.cuh"
