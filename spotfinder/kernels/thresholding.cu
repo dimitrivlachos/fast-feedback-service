@@ -1,3 +1,19 @@
+/**
+ * @file thresholding.cu
+ * @brief Contains CUDA kernel implementations for thresholding image 
+ *        data.
+ *
+ * This file contains CUDA kernels for thresholding image data based on
+ * the variance and mean of the local neighbourhood of each pixel. These
+ * thresholds are used to identify potential signal spots against a
+ * background in the input image based on local variance, mean, and
+ * user-defined significance levels.
+ * 
+ * @note The __restrict__ keyword is used to indicate to the compiler
+ *       that the two pointers are not aliased, allowing the compiler to
+ *       perform more aggressive optimizations.
+ */
+
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 
@@ -29,9 +45,9 @@ namespace cg = cooperative_groups;
  * @param n_sig_b Background noise significance level.
  * @param n_sig_s Signal significance level.
  */
-__global__ void compute_threshold_kernel(pixel_t *image,
-                                         uint8_t *mask,
-                                         uint8_t *result_mask,
+__global__ void compute_threshold_kernel(pixel_t __restrict__ *image,
+                                         uint8_t __restrict__ *mask,
+                                         uint8_t __restrict__ *result_mask,
                                          size_t image_pitch,
                                          size_t mask_pitch,
                                          size_t result_pitch,
@@ -127,9 +143,9 @@ __global__ void compute_threshold_kernel(pixel_t *image,
  * @param n_sig_b Background noise significance level.
  * @param n_sig_s Signal significance level.
  */
-__global__ void compute_dispersion_threshold_kernel(pixel_t *image,
-                                                    uint8_t *mask,
-                                                    uint8_t *result_mask,
+__global__ void compute_dispersion_threshold_kernel(pixel_t __restrict__ *image,
+                                                    uint8_t __restrict__ *mask,
+                                                    uint8_t __restrict__ *result_mask,
                                                     size_t image_pitch,
                                                     size_t mask_pitch,
                                                     size_t result_pitch,
@@ -227,10 +243,10 @@ __global__ void compute_dispersion_threshold_kernel(pixel_t *image,
  * @param n_sig_s Signal significance level.
  * @param threshold Global threshold for the intensity.
  */
-__global__ void compute_final_threshold_kernel(pixel_t *image,
-                                               uint8_t *mask,
-                                               uint8_t *dispersion_mask,
-                                               uint8_t *result_mask,
+__global__ void compute_final_threshold_kernel(pixel_t __restrict__ *image,
+                                               uint8_t __restrict__ *mask,
+                                               uint8_t __restrict__ *dispersion_mask,
+                                               uint8_t __restrict__ *result_mask,
                                                size_t image_pitch,
                                                size_t mask_pitch,
                                                size_t dispersion_mask_pitch,
