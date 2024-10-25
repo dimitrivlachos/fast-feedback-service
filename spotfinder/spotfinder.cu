@@ -50,7 +50,6 @@ void debug_writeout(uint8_t *device_data,
     save_device_data_to_txt(
       device_data, pitch_bytes, width, height, stream, filename, condition);
 }
-#pragma endregion Device functions
 
 #pragma region Launch Wrappers
 /**
@@ -202,30 +201,28 @@ void call_do_spotfinding_extended(dim3 blocks,
     PitchedMalloc<uint8_t> d_erosion_mask(width, height);
 
     {  // Scope for erosion pass launch parameters
-        dim3 threads_per_erosion_block(32, 32);
-        dim3 erosion_blocks(
-          (width + threads_per_erosion_block.x - 1) / threads_per_erosion_block.x,
-          (height + threads_per_erosion_block.y - 1) / threads_per_erosion_block.y);
+        // dim3 threads_per_erosion_block(32, 32);
+        // dim3 erosion_blocks(
+        //   (width + threads_per_erosion_block.x - 1) / threads_per_erosion_block.x,
+        //   (height + threads_per_erosion_block.y - 1) / threads_per_erosion_block.y);
 
         // Calculate the shared memory size for the erosion kernel
-        size_t erosion_shared_memory =
-          (threads_per_erosion_block.x + 2 * first_pass_kernel_radius)
-          * (threads_per_erosion_block.y + 2 * first_pass_kernel_radius)
-          * sizeof(uint8_t);
+        // size_t erosion_shared_memory =
+        //   (threads_per_erosion_block.x + 2 * first_pass_kernel_radius)
+        //   * (threads_per_erosion_block.y + 2 * first_pass_kernel_radius)
+        //   * sizeof(uint8_t);
 
         // Perform erosion
-        erosion_kernel<<<erosion_blocks,
-                         threads_per_erosion_block,
-                         erosion_shared_memory,
-                         stream>>>(d_dispersion_mask.get(),
-                                   d_erosion_mask.get(),
-                                   mask.get(),
-                                   d_dispersion_mask.pitch,
-                                   d_erosion_mask.pitch,
-                                   mask.pitch,
-                                   width,
-                                   height,
-                                   first_pass_kernel_radius);
+        erosion_kernel<<<blocks, threads, shared_memory, stream>>>(
+          d_dispersion_mask.get(),
+          d_erosion_mask.get(),
+          mask.get(),
+          d_dispersion_mask.pitch,
+          d_erosion_mask.pitch,
+          mask.pitch,
+          width,
+          height,
+          first_pass_kernel_radius);
         cudaStreamSynchronize(
           stream);  // Synchronize the CUDA stream to ensure the erosion pass is complete
 
