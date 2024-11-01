@@ -57,8 +57,6 @@ auto operator==(const int2 &left, const int2 &right) -> bool {
     return left.x == right.x && left.y == right.y;
 }
 
-enum class DispersionAlgorithm { DISPERSION, DISPERSION_EXTENDED };
-
 bool are_close(float a, float b, float tolerance) {
     return std::fabs(a - b) < tolerance;
 }
@@ -186,6 +184,34 @@ void wait_for_ready_for_read(const std::string &path,
 }
 
 /**
+ * @brief Struct to store the dispersion algorithm and its string representation.
+ */
+struct DispersionAlgorithm {
+    std::string algorithm_str;
+    enum class Algorithm { DISPERSION, DISPERSION_EXTENDED };
+    Algorithm algorithm;
+
+    /**
+     * @brief Constructor to initialize the DispersionAlgorithm object.
+     * @param input The string representation of the algorithm.
+     */
+    DispersionAlgorithm(std::string input) {
+        // Convert the input to lowercase for case-insensitive comparison
+        this->algorithm_str = input;
+        std::transform(input.begin(), input.end(), input.begin(), ::tolower);
+        if (input == "dispersion") {
+            this->algorithm_str = "Dispersion";
+            this->algorithm = Algorithm::DISPERSION;
+        } else if (input == "dispersion_extended") {
+            this->algorithm_str = "Dispersion Extended";  // ✨
+            this->algorithm = Algorithm::DISPERSION_EXTENDED;
+        } else {
+            throw std::invalid_argument("Invalid algorithm specified");
+        }
+    }
+};
+
+/**
  * @brief Class for handling a pipe and sending data through it in a thread-safe manner.
  */
 class PipeHandler {
@@ -282,7 +308,7 @@ int main(int argc, char **argv) {
     parser.add_argument("-a", "--algorithm")
       .help("Dispersion algorithm to use")
       .metavar("ALGO")
-      .default_value("dispersion_extended");
+      .default_value<std::string>("dispersion_extended");
     parser.add_argument("--dmin")
       .help("Minimum resolution (Å)")
       .metavar("MIN D")
@@ -308,24 +334,8 @@ int main(int argc, char **argv) {
     float dmin = parser.get<float>("dmin");
     float dmax = parser.get<float>("dmax");
 
-    DispersionAlgorithm dispersion_algorithm;
-    {  // Parse the algorithm input
-        std::string dispersion_algorithm_str = parser.get<std::string>("algorithm");
-        std::transform(dispersion_algorithm_str.begin(),
-                       dispersion_algorithm_str.end(),
-                       dispersion_algorithm_str.begin(),
-                       ::tolower);
-        if (dispersion_algorithm_str == "dispersion") {
-            dispersion_algorithm = DispersionAlgorithm::DISPERSION;
-        } else if (dispersion_algorithm_str == "dispersion_extended") {
-            dispersion_algorithm = DispersionAlgorithm::DISPERSION_EXTENDED;
-        } else {
-            print("Error: Unknown dispersion algorithm '{}'\n",
-                  dispersion_algorithm_str);
-            std::exit(1);
-        }
-        print("Algorithm: {}\n", styled(dispersion_algorithm_str, fmt_green));
-    }
+    DispersionAlgorithm dispersion_algorithm(parser.get<std::string>("algorithm"));
+    print("Algorithm: {}\n", styled(dispersion_algorithm.algorithm_str, fmt_green));
 
     uint32_t num_cpu_threads = parser.get<uint32_t>("threads");
     if (num_cpu_threads < 1) {
@@ -756,8 +766,8 @@ int main(int argc, char **argv) {
 
 #pragma region Spotfinding
                 // When done, launch the spotfind kernel
-                switch (dispersion_algorithm) {
-                case DispersionAlgorithm::DISPERSION:
+                switch (dispersion_algorithm.algorithm) {
+                case DispersionAlgorithm::Algorithm::DISPERSION:
                     call_do_spotfinding_dispersion(blocks_dims,
                                                    gpu_thread_block_size,
                                                    0,
@@ -769,7 +779,7 @@ int main(int argc, char **argv) {
                                                    trusted_px_max,
                                                    &device_results);
                     break;
-                case DispersionAlgorithm::DISPERSION_EXTENDED:
+                case DispersionAlgorithm::Algorithm::DISPERSION_EXTENDED:
                     call_do_spotfinding_extended(blocks_dims,
                                                  gpu_thread_block_size,
                                                  0,
@@ -952,7 +962,7 @@ int main(int argc, char **argv) {
                     for (int y = 0, k = 0; y < height; ++y) {
                         for (int x = 0; x < width; ++x, ++k) {
                             if (host_results[k]) {
-                                out.print("{:d}, {:d}\n", x, y);
+                                out.print("{:4d}, {:4d}\n", x, y);
                             }
                         }
                     }
