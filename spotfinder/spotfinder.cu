@@ -54,7 +54,7 @@ void debug_writeout(uint8_t *device_data,
 #pragma region Launch Wrappers
 /**
  * @brief Wrapper function to call the dispersion-based spotfinding algorithm.
- * This function launches the `compute_dispersion_threshold_kernel` to perform
+ * This function launches the `dispersion` kernel to perform
  * the spotfinding based on the basic dispersion threshold.
  *
  * @param blocks The dimensions of the grid of blocks.
@@ -88,7 +88,7 @@ void call_do_spotfinding_dispersion(dim3 blocks,
     constexpr uint8_t basic_kernel_radius = 3;
 
     // Launch the dispersion threshold kernel
-    compute_threshold_kernel<<<blocks, threads, shared_memory, stream>>>(
+    dispersion<<<blocks, threads, shared_memory, stream>>>(
       image.get(),            // Image data pointer
       mask.get(),             // Mask data pointer
       result_strong->get(),   // Output mask pointer
@@ -111,8 +111,8 @@ void call_do_spotfinding_dispersion(dim3 blocks,
 
 /**
  * @brief Wrapper function to call the extended dispersion-based spotfinding algorithm.
- * This function launches the `compute_final_threshold_kernel` for final thresholding
- * after applying the dispersion mask and the `compute_dispersion_threshold_kernel`
+ * This function launches the `dispersion_extended_second_pass` for final thresholding
+ * after applying the dispersion mask and the `dispersion_extended_first_pass`
  * for initial thresholding.
  *
  * @param blocks The dimensions of the grid of blocks.
@@ -129,7 +129,7 @@ void call_do_spotfinding_dispersion(dim3 blocks,
  * @param min_count The minimum number of valid pixels required in the local neighborhood. Default is 3.
  * @param n_sig_b The background noise significance level. Default is 6.0.
  * @param n_sig_s The signal significance level. Default is 3.0.
- * @param threshold The global threshold for intensity values. Default is 10.0.
+ * @param threshold The global threshold for intensity values. Default is 0.
  */
 void call_do_spotfinding_extended(dim3 blocks,
                                   dim3 threads,
@@ -148,48 +148,47 @@ void call_do_spotfinding_extended(dim3 blocks,
                                   float threshold) {
     // Allocate intermediate buffer for the dispersion mask on the device
     PitchedMalloc<uint8_t> d_dispersion_mask(width, height);
+    PitchedMalloc<uint8_t> d_erosion_mask(width, height);
 
     constexpr uint8_t first_pass_kernel_radius = 3;
+    constexpr uint8_t second_pass_kernel_radius = 5;
 
     /*
-     * First pass
+     * First pass 🔎
      * Perform the initial dispersion thresholding only on the background
      * threshold. The surviving pixels are then used as a mask later to
      * exclude them from the background calculation in the second pass.
     */
-    {
-        // First pass 🔎 Perform the initial dispersion thresholding
-        compute_dispersion_threshold_kernel<<<blocks, threads, shared_memory, stream>>>(
-          image.get(),               // Image data pointer
-          mask.get(),                // Mask data pointer
-          d_dispersion_mask.get(),   // Output dispersion mask pointer
-          image.pitch,               // Image pitch
-          mask.pitch,                // Mask pitch
-          d_dispersion_mask.pitch,   // Output dispersion mask pitch
-          width,                     // Image width
-          height,                    // Image height
-          max_valid_pixel_value,     // Maximum valid pixel value
-          first_pass_kernel_radius,  // Kernel radius
-          first_pass_kernel_radius,  // Kernel radius
-          min_count,                 // Minimum count
-          n_sig_b,                   // Background significance level
-          n_sig_s                    // Signal significance level
-        );
-        cudaStreamSynchronize(
-          stream);  // Synchronize the CUDA stream to ensure the first pass is complete
+    dispersion_extended_first_pass<<<blocks, threads, shared_memory, stream>>>(
+      image.get(),               // Image data pointer
+      mask.get(),                // Mask data pointer
+      d_dispersion_mask.get(),   // Output dispersion mask pointer
+      image.pitch,               // Image pitch
+      mask.pitch,                // Mask pitch
+      d_dispersion_mask.pitch,   // Output dispersion mask pitch
+      width,                     // Image width
+      height,                    // Image height
+      max_valid_pixel_value,     // Maximum valid pixel value
+      first_pass_kernel_radius,  // Kernel radius
+      first_pass_kernel_radius,  // Kernel radius
+      min_count,                 // Minimum count
+      n_sig_b,                   // Background significance level
+      n_sig_s                    // Signal significance level
+    );
+    cudaStreamSynchronize(
+      stream);  // Synchronize the CUDA stream to ensure the first pass is complete
 
-        if (do_writeout) {
-            printf("First pass complete\n");
-            debug_writeout(
-              d_dispersion_mask.get(),
-              d_dispersion_mask.pitch_bytes(),
-              width,
-              height,
-              stream,
-              "first_pass_dispersion_result",
-              [](uint8_t pixel) { return pixel == MASKED_PIXEL ? 0 : 255; },
-              [](uint8_t pixel) { return pixel != 0; });
-        }
+    if (do_writeout) {
+        printf("First pass complete\n");
+        debug_writeout(
+          d_dispersion_mask.get(),
+          d_dispersion_mask.pitch_bytes(),
+          width,
+          height,
+          stream,
+          "first_pass_dispersion_result",
+          [](uint8_t pixel) { return pixel == MASKED_PIXEL ? 0 : 255; },
+          [](uint8_t pixel) { return pixel != 0; });
     }
 
     /*
@@ -198,88 +197,68 @@ void call_do_spotfinding_extended(dim3 blocks,
      * The surviving pixels are then used as a mask to exclude them
      * from the background calculation in the second pass.
     */
-    PitchedMalloc<uint8_t> d_erosion_mask(width, height);
 
-    {  // Scope for erosion pass launch parameters
-        // dim3 threads_per_erosion_block(32, 32);
-        // dim3 erosion_blocks(
-        //   (width + threads_per_erosion_block.x - 1) / threads_per_erosion_block.x,
-        //   (height + threads_per_erosion_block.y - 1) / threads_per_erosion_block.y);
+    // Perform erosion
+    erosion<<<blocks, threads, shared_memory, stream>>>(d_dispersion_mask.get(),
+                                                        d_erosion_mask.get(),
+                                                        mask.get(),
+                                                        d_dispersion_mask.pitch,
+                                                        d_erosion_mask.pitch,
+                                                        mask.pitch,
+                                                        width,
+                                                        height,
+                                                        first_pass_kernel_radius);
+    cudaStreamSynchronize(
+      stream);  // Synchronize the CUDA stream to ensure the erosion pass is complete
 
-        // Calculate the shared memory size for the erosion kernel
-        // size_t erosion_shared_memory =
-        //   (threads_per_erosion_block.x + 2 * first_pass_kernel_radius)
-        //   * (threads_per_erosion_block.y + 2 * first_pass_kernel_radius)
-        //   * sizeof(uint8_t);
-
-        // Perform erosion
-        erosion_kernel<<<blocks, threads, shared_memory, stream>>>(
-          d_dispersion_mask.get(),
+    if (do_writeout) {
+        printf("Erosion pass complete\n");
+        debug_writeout(
           d_erosion_mask.get(),
-          mask.get(),
-          d_dispersion_mask.pitch,
-          d_erosion_mask.pitch,
-          mask.pitch,
+          d_erosion_mask.pitch_bytes(),
           width,
           height,
-          first_pass_kernel_radius);
-        cudaStreamSynchronize(
-          stream);  // Synchronize the CUDA stream to ensure the erosion pass is complete
-
-        if (do_writeout) {
-            printf("Erosion pass complete\n");
-            debug_writeout(
-              d_erosion_mask.get(),
-              d_erosion_mask.pitch_bytes(),
-              width,
-              height,
-              stream,
-              "eroded_dispersion_result",
-              [](uint8_t pixel) { return pixel == MASKED_PIXEL ? 0 : 255; },
-              [](uint8_t pixel) { return pixel == MASKED_PIXEL; });
-        }
+          stream,
+          "eroded_dispersion_result",
+          [](uint8_t pixel) { return pixel == MASKED_PIXEL ? 0 : 255; },
+          [](uint8_t pixel) { return pixel == MASKED_PIXEL; });
     }
-
-    constexpr uint8_t second_pass_kernel_radius = 5;
 
     /*
      * Second pass 🎯
      * Perform the final thresholding using the dispersion mask.
     */
-    {
-        // Second pass: Perform the final thresholding using the dispersion mask
-        compute_final_threshold_kernel<<<blocks, threads, shared_memory, stream>>>(
-          image.get(),                // Image data pointer
-          mask.get(),                 // Mask data pointer
-          d_erosion_mask.get(),       // Dispersion mask pointer
-          result_strong->get(),       // Output result mask pointer
-          image.pitch,                // Image pitch
-          mask.pitch,                 // Mask pitch
-          d_erosion_mask.pitch,       // Dispersion mask pitch
-          result_strong->pitch,       // Output result mask pitch
-          width,                      // Image width
-          height,                     // Image height
-          max_valid_pixel_value,      // Maximum valid pixel value
-          second_pass_kernel_radius,  // Kernel radius
-          second_pass_kernel_radius,  // Kernel radius
-          n_sig_s,                    // Signal significance level
-          threshold                   // Global threshold
-        );
-        cudaStreamSynchronize(
-          stream);  // Synchronize the CUDA stream to ensure the second pass is complete
+    dispersion_extended_second_pass<<<blocks, threads, shared_memory, stream>>>(
+      image.get(),                // Image data pointer
+      mask.get(),                 // Mask data pointer
+      d_erosion_mask.get(),       // Dispersion mask pointer
+      result_strong->get(),       // Output result mask pointer
+      image.pitch,                // Image pitch
+      mask.pitch,                 // Mask pitch
+      d_erosion_mask.pitch,       // Dispersion mask pitch
+      result_strong->pitch,       // Output result mask pitch
+      width,                      // Image width
+      height,                     // Image height
+      max_valid_pixel_value,      // Maximum valid pixel value
+      second_pass_kernel_radius,  // Kernel radius
+      second_pass_kernel_radius,  // Kernel radius
+      n_sig_s,                    // Signal significance level
+      threshold                   // Global threshold
+    );
+    cudaStreamSynchronize(
+      stream);  // Synchronize the CUDA stream to ensure the second pass is complete
 
-        if (do_writeout) {
-            printf("Second pass complete\n");
-            debug_writeout(
-              result_strong->get(),
-              mask.pitch_bytes(),
-              width,
-              height,
-              stream,
-              "final_extended_threshold_result",
-              [](uint8_t pixel) { return pixel == VALID_PIXEL ? 255 : 0; },
-              [](uint8_t pixel) { return pixel != 0; });
-        }
+    if (do_writeout) {
+        printf("Second pass complete\n");
+        debug_writeout(
+          result_strong->get(),
+          mask.pitch_bytes(),
+          width,
+          height,
+          stream,
+          "final_extended_threshold_result",
+          [](uint8_t pixel) { return pixel == VALID_PIXEL ? 255 : 0; },
+          [](uint8_t pixel) { return pixel != 0; });
     }
 }
 
