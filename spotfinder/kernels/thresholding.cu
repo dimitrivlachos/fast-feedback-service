@@ -20,6 +20,7 @@
 #include <cuda/std/tuple>
 
 #include "cuda_common.hpp"
+#include "device_common.cuh"
 #include "thresholding.cuh"
 
 namespace cg = cooperative_groups;
@@ -150,11 +151,39 @@ __global__ void dispersion(pixel_t __restrict__ *image,
 
     if (x >= width || y >= height) return;  // Out of bounds guard
 
-    pixel_t this_pixel = image[y * image_pitch + x];
+    // Allocate and load shared memory for the mask
+    extern __shared__ uint8_t shared_mem[];
+    uint8_t *shared_mask = shared_mem;
+    uint shared_mask_size =
+      (blockDim.x + 2 * kernel_width) * (blockDim.y + 2 * kernel_height);
+    pixel_t *shared_image = reinterpret_cast<pixel_t *>(&shared_mask[shared_mask_size]);
+
+    load_shared_memory_halo(image,
+                            mask,
+                            shared_image,
+                            shared_mask,
+                            block,
+                            x,
+                            y,
+                            image_pitch,
+                            mask_pitch,
+                            width,
+                            height,
+                            kernel_width,
+                            kernel_height);
+
+    block.sync();
+
+    // pixel_t this_pixel = image[y * image_pitch + x];
+    pixel_t this_pixel =
+      shared_image[(threadIdx.y + kernel_height) * (blockDim.x + 2 * kernel_width)
+                   + (threadIdx.x + kernel_width)];
 
     // Check if the pixel is masked and below the maximum valid pixel value
     bool px_is_valid =
-      mask[y * mask_pitch + x] != 0 && this_pixel <= max_valid_pixel_value;
+      shared_mask[block.thread_index().y * block.group_dim().x + block.thread_index().x]
+        != 0
+      && this_pixel <= max_valid_pixel_value;
 
     // Validity guard
     if (!px_is_valid) {
