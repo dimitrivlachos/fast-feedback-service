@@ -87,8 +87,23 @@ void call_do_spotfinding_dispersion(dim3 blocks,
     /// One-direction width of kernel. Total kernel span is (K * 2 + 1)
     constexpr uint8_t basic_kernel_radius = 3;
 
+    // Calculate the total shared memory size required per block
+    int shared_block_width = threads.x + (2 * basic_kernel_radius);
+    int shared_block_height = threads.y + (2 * basic_kernel_radius);
+
+    size_t shared_image_size =
+      shared_block_width * shared_block_height * sizeof(pixel_t);
+    size_t shared_mask_size =
+      shared_block_width * shared_block_height * sizeof(uint8_t);
+
+    size_t shared_memory_required = shared_image_size + shared_mask_size;
+
+    printf("Image size: %zu\n", shared_image_size);
+    printf("Mask size: %zu\n", shared_mask_size);
+    printf("Shared memory required: %zu\n", shared_memory_required);
+
     // Launch the dispersion threshold kernel
-    dispersion<<<blocks, threads, shared_memory, stream>>>(
+    dispersion<<<blocks, threads, shared_memory_required, stream>>>(
       image.get(),            // Image data pointer
       mask.get(),             // Mask data pointer
       result_strong->get(),   // Output mask pointer
@@ -153,13 +168,24 @@ void call_do_spotfinding_extended(dim3 blocks,
     constexpr uint8_t first_pass_kernel_radius = 3;
     constexpr uint8_t second_pass_kernel_radius = 5;
 
+    // Calculate the total shared memory size required per block
+    int shared_block_width = threads.x + (2 * second_pass_kernel_radius);
+    int shared_block_height = threads.y + (2 * second_pass_kernel_radius);
+
+    size_t shared_image_size =
+      shared_block_width * shared_block_height * sizeof(pixel_t);
+    size_t shared_mask_size =
+      shared_block_width * shared_block_height * sizeof(uint8_t);
+
+    size_t shared_memory_required = shared_image_size + shared_mask_size;
+
     /*
      * First pass 🔎
      * Perform the initial dispersion thresholding only on the background
      * threshold. The surviving pixels are then used as a mask later to
      * exclude them from the background calculation in the second pass.
     */
-    dispersion_extended_first_pass<<<blocks, threads, shared_memory, stream>>>(
+    dispersion_extended_first_pass<<<blocks, threads, shared_memory_required, stream>>>(
       image.get(),               // Image data pointer
       mask.get(),                // Mask data pointer
       d_dispersion_mask.get(),   // Output dispersion mask pointer
@@ -199,15 +225,16 @@ void call_do_spotfinding_extended(dim3 blocks,
     */
 
     // Perform erosion
-    erosion<<<blocks, threads, shared_memory, stream>>>(d_dispersion_mask.get(),
-                                                        d_erosion_mask.get(),
-                                                        mask.get(),
-                                                        d_dispersion_mask.pitch,
-                                                        d_erosion_mask.pitch,
-                                                        mask.pitch,
-                                                        width,
-                                                        height,
-                                                        first_pass_kernel_radius);
+    erosion<<<blocks, threads, shared_memory_required, stream>>>(
+      d_dispersion_mask.get(),
+      d_erosion_mask.get(),
+      mask.get(),
+      d_dispersion_mask.pitch,
+      d_erosion_mask.pitch,
+      mask.pitch,
+      width,
+      height,
+      first_pass_kernel_radius);
     cudaStreamSynchronize(
       stream);  // Synchronize the CUDA stream to ensure the erosion pass is complete
 
@@ -228,7 +255,10 @@ void call_do_spotfinding_extended(dim3 blocks,
      * Second pass 🎯
      * Perform the final thresholding using the dispersion mask.
     */
-    dispersion_extended_second_pass<<<blocks, threads, shared_memory, stream>>>(
+    dispersion_extended_second_pass<<<blocks,
+                                      threads,
+                                      shared_memory_required,
+                                      stream>>>(
       image.get(),                // Image data pointer
       mask.get(),                 // Mask data pointer
       d_erosion_mask.get(),       // Dispersion mask pointer
