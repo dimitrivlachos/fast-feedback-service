@@ -9,11 +9,15 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 
+#include "device_common.cuh"
 #include "kernels/erosion.cuh"
 #include "kernels/thresholding.cuh"
 #include "spotfinder.cuh"
 
 namespace cg = cooperative_groups;
+
+// Global constants for dispersion thresholding
+__constant__ ThresholdingConstants thresholding_constants;
 
 /**
  * @brief Device function for writing out debug information in PNG and TXT formats.

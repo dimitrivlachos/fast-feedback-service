@@ -20,9 +20,18 @@
 #include <cuda/std/tuple>
 
 #include "cuda_common.hpp"
+#include "device_common.cuh"
 #include "thresholding.cuh"
 
 namespace cg = cooperative_groups;
+
+/*
+ * Constants for thresholding kernels
+ * extern ketword is used to declare a variable that is defined in
+ * another file. This links the constant global variable to the
+ * thresholding_constants variable defined in spotfinder.cu
+ */
+extern __constant__ ThresholdingConstants thresholding_constants;
 
 #pragma region Device Functions
 /**
