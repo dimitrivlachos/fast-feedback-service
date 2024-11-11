@@ -136,58 +136,54 @@ __device__ cuda::std::tuple<bool, bool, uint8_t> calculate_dispersion_flags(
  */
 __global__ void dispersion(pixel_t __restrict__ *image,
                            uint8_t __restrict__ *mask,
-                           uint8_t __restrict__ *result_mask,
-                           size_t image_pitch,
-                           size_t mask_pitch,
-                           size_t result_pitch,
-                           int width,
-                           int height,
-                           pixel_t max_valid_pixel_value,
-                           uint8_t kernel_width,
-                           uint8_t kernel_height,
-                           uint8_t min_count,
-                           float n_sig_b,
-                           float n_sig_s) {
+                           uint8_t __restrict__ *result_mask) {
     // Move pointers to the correct slice
-    image = image + (image_pitch * height * blockIdx.z);
-    result_mask = result_mask + (mask_pitch * height * blockIdx.z);
+    image = image
+            + (thresholding_constants.image_pitch * thresholding_constants.height
+               * blockIdx.z);
+    result_mask = result_mask
+                  + (thresholding_constants.mask_pitch * thresholding_constants.height
+                     * blockIdx.z);
 
     // Calculate the pixel coordinates
     auto block = cg::this_thread_block();
     int x = block.group_index().x * block.group_dim().x + block.thread_index().x;
     int y = block.group_index().y * block.group_dim().y + block.thread_index().y;
 
-    if (x >= width || y >= height) return;  // Out of bounds guard
+    if (x >= thresholding_constants.width || y >= thresholding_constants.height)
+        return;  // Out of bounds guard
 
-    pixel_t this_pixel = image[y * image_pitch + x];
+    pixel_t this_pixel = image[y * thresholding_constants.image_pitch + x];
 
     // Check if the pixel is masked and below the maximum valid pixel value
-    bool px_is_valid =
-      mask[y * mask_pitch + x] != 0 && this_pixel <= max_valid_pixel_value;
+    bool px_is_valid = mask[y * thresholding_constants.mask_pitch + x] != 0
+                       && this_pixel <= thresholding_constants.max_valid_pixel_value;
 
     // Validity guard
     if (!px_is_valid) {
-        result_mask[x + result_pitch * y] = 0;
+        result_mask[x + thresholding_constants.result_pitch * y] = 0;
         return;
     }
 
     // Calculate the dispersion flags
-    auto [not_background, is_signal, n] = calculate_dispersion_flags(image,
-                                                                     mask,
-                                                                     image_pitch,
-                                                                     mask_pitch,
-                                                                     this_pixel,
-                                                                     x,
-                                                                     y,
-                                                                     width,
-                                                                     height,
-                                                                     kernel_width,
-                                                                     kernel_height,
-                                                                     min_count,
-                                                                     n_sig_b,
-                                                                     n_sig_s);
+    auto [not_background, is_signal, n] =
+      calculate_dispersion_flags(image,
+                                 mask,
+                                 thresholding_constants.image_pitch,
+                                 thresholding_constants.mask_pitch,
+                                 this_pixel,
+                                 x,
+                                 y,
+                                 thresholding_constants.width,
+                                 thresholding_constants.height,
+                                 thresholding_constants.kernel_width,
+                                 thresholding_constants.kernel_height,
+                                 thresholding_constants.min_count,
+                                 thresholding_constants.n_sig_b,
+                                 thresholding_constants.n_sig_s);
 
-    result_mask[x + result_pitch * y] = not_background && is_signal && n > 1;
+    result_mask[x + thresholding_constants.result_pitch * y] =
+      not_background && is_signal && n > 1;
 }
 
 /**

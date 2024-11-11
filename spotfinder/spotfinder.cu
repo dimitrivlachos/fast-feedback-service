@@ -91,14 +91,11 @@ void call_do_spotfinding_dispersion(dim3 blocks,
     /// One-direction width of kernel. Total kernel span is (K * 2 + 1)
     constexpr uint8_t basic_kernel_radius = 3;
 
-    // Launch the dispersion threshold kernel
-    dispersion<<<blocks, threads, shared_memory, stream>>>(
-      image.get(),            // Image data pointer
-      mask.get(),             // Mask data pointer
-      result_strong->get(),   // Output mask pointer
+    // Set the thresholding constants
+    ThresholdingConstants host_constants{
       image.pitch,            // Image pitch
       mask.pitch,             // Mask pitch
-      result_strong->pitch,   // Output mask pitch
+      result_strong->pitch,   // Output result mask pitch
       width,                  // Image width
       height,                 // Image height
       max_valid_pixel_value,  // Maximum valid pixel value
@@ -107,6 +104,21 @@ void call_do_spotfinding_dispersion(dim3 blocks,
       min_count,              // Minimum count
       n_sig_b,                // Background significance level
       n_sig_s                 // Signal significance level
+    };
+
+    // Copy the constants to the device
+    cudaMemcpyToSymbolAsync(thresholding_constants,
+                            &host_constants,
+                            sizeof(ThresholdingConstants),
+                            0,
+                            cudaMemcpyHostToDevice,
+                            stream);
+
+    // Launch the dispersion threshold kernel
+    dispersion<<<blocks, threads, shared_memory, stream>>>(
+      image.get(),          // Image data pointer
+      mask.get(),           // Mask data pointer
+      result_strong->get()  // Output mask pointer
     );
 
     cudaStreamSynchronize(
