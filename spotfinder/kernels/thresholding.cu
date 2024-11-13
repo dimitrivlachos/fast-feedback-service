@@ -47,10 +47,8 @@ namespace cg = cooperative_groups;
  *        - n: The number of valid pixels in the local neighbourhood.
  */
 __device__ cuda::std::tuple<bool, bool, uint8_t> calculate_dispersion_flags(
-  pixel_t *image,
-  uint8_t *mask,
-  size_t image_pitch,
-  size_t mask_pitch,
+  cudaTextureObject_t image_tex,
+  cudaTextureObject_t mask_tex,
   pixel_t this_pixel,
   int x,
   int y,
@@ -70,15 +68,15 @@ __device__ cuda::std::tuple<bool, bool, uint8_t> calculate_dispersion_flags(
     int row_end = min(y + kernel_height + 1, height);
 
     for (int row = row_start; row < row_end; ++row) {
-        int row_offset = image_pitch * row;
-        int mask_offset = mask_pitch * row;
-
         int col_start = max(0, x - kernel_width);
         int col_end = min(x + kernel_width + 1, width);
 
         for (int col = col_start; col < col_end; ++col) {
-            pixel_t pixel = image[row_offset + col];
-            uint8_t mask_pixel = mask[mask_offset + col];
+            pixel_t pixel = tex2D<pixel_t>(image_tex, col, row);
+            if (pixel > 0) {
+                printf("Pixel value: %d\n", pixel);
+            }
+            uint8_t mask_pixel = tex2D<uint8_t>(mask_tex, col, row);
             bool include_pixel = mask_pixel != 0;  // If the pixel is valid
             if (include_pixel) {
                 sum += pixel;
@@ -125,11 +123,9 @@ __device__ cuda::std::tuple<bool, bool, uint8_t> calculate_dispersion_flags(
  * @param n_sig_b Background noise significance level.
  * @param n_sig_s Signal significance level.
  */
-__global__ void dispersion(pixel_t __restrict__ *image,
-                           uint8_t __restrict__ *mask,
+__global__ void dispersion(cudaTextureObject_t image_tex,
+                           cudaTextureObject_t mask_tex,
                            uint8_t __restrict__ *result_mask,
-                           size_t image_pitch,
-                           size_t mask_pitch,
                            size_t result_pitch,
                            int width,
                            int height,
@@ -140,8 +136,8 @@ __global__ void dispersion(pixel_t __restrict__ *image,
                            float n_sig_b,
                            float n_sig_s) {
     // Move pointers to the correct slice
-    image = image + (image_pitch * height * blockIdx.z);
-    result_mask = result_mask + (mask_pitch * height * blockIdx.z);
+    // image = image + (image_pitch * height * blockIdx.z);
+    // result_mask = result_mask + (result_pitch * height * blockIdx.z);
 
     // Calculate the pixel coordinates
     auto block = cg::this_thread_block();
@@ -150,11 +146,15 @@ __global__ void dispersion(pixel_t __restrict__ *image,
 
     if (x >= width || y >= height) return;  // Out of bounds guard
 
-    pixel_t this_pixel = image[y * image_pitch + x];
+    pixel_t this_pixel = tex2D<pixel_t>(image_tex, x, y);
+
+    if (this_pixel > 0) {
+        printf("Pixel value: %d\n", this_pixel);
+    }
 
     // Check if the pixel is masked and below the maximum valid pixel value
     bool px_is_valid =
-      mask[y * mask_pitch + x] != 0 && this_pixel <= max_valid_pixel_value;
+      tex2D<uint8_t>(mask_tex, x, y) != 0 && this_pixel <= max_valid_pixel_value;
 
     // Validity guard
     if (!px_is_valid) {
@@ -163,10 +163,8 @@ __global__ void dispersion(pixel_t __restrict__ *image,
     }
 
     // Calculate the dispersion flags
-    auto [not_background, is_signal, n] = calculate_dispersion_flags(image,
-                                                                     mask,
-                                                                     image_pitch,
-                                                                     mask_pitch,
+    auto [not_background, is_signal, n] = calculate_dispersion_flags(image_tex,
+                                                                     mask_tex,
                                                                      this_pixel,
                                                                      x,
                                                                      y,
@@ -236,22 +234,22 @@ __global__ void dispersion_extended_first_pass(pixel_t __restrict__ *image,
     }
 
     // Calculate the dispersion flags
-    auto [not_background, is_signal, n] = calculate_dispersion_flags(image,
-                                                                     mask,
-                                                                     image_pitch,
-                                                                     mask_pitch,
-                                                                     this_pixel,
-                                                                     x,
-                                                                     y,
-                                                                     width,
-                                                                     height,
-                                                                     kernel_width,
-                                                                     kernel_height,
-                                                                     min_count,
-                                                                     n_sig_b,
-                                                                     n_sig_s);
+    // auto [not_background, is_signal, n] = calculate_dispersion_flags(image,
+    //                                                                  mask,
+    //                                                                  image_pitch,
+    //                                                                  mask_pitch,
+    //                                                                  this_pixel,
+    //                                                                  x,
+    //                                                                  y,
+    //                                                                  width,
+    //                                                                  height,
+    //                                                                  kernel_width,
+    //                                                                  kernel_height,
+    //                                                                  min_count,
+    //                                                                  n_sig_b,
+    //                                                                  n_sig_s);
 
-    result_mask[x + result_pitch * y] = not_background && n > 1;
+    // result_mask[x + result_pitch * y] = not_background && n > 1;
 }
 
 /**

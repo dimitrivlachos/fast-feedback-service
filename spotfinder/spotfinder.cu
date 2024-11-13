@@ -87,13 +87,46 @@ void call_do_spotfinding_dispersion(dim3 blocks,
     /// One-direction width of kernel. Total kernel span is (K * 2 + 1)
     constexpr uint8_t basic_kernel_radius = 3;
 
+    // Specify the CUDA resource descriptor for the mask data
+    struct cudaResourceDesc mask_resDesc;
+    memset(&mask_resDesc, 0, sizeof(mask_resDesc));
+    mask_resDesc.resType = cudaResourceTypePitch2D;
+    mask_resDesc.res.pitch2D.devPtr = mask.get();
+
+    // Specify the CUDA texture descriptor for the mask data
+    struct cudaTextureDesc mask_texDesc;
+    memset(&mask_texDesc, 0, sizeof(mask_texDesc));
+    mask_texDesc.addressMode[0] = cudaAddressModeClamp;
+    mask_texDesc.addressMode[1] = cudaAddressModeClamp;
+    mask_texDesc.filterMode = cudaFilterModePoint;
+    mask_texDesc.readMode = cudaReadModeElementType;
+    mask_texDesc.normalizedCoords = 0;
+
+    // Create a texture object for the mask data
+    cudaTextureObject_t mask_tex = 0;
+    cudaCreateTextureObject(&mask_tex, &mask_resDesc, &mask_texDesc, nullptr);
+
+    struct cudaResourceDesc image_resDesc;
+    memset(&image_resDesc, 0, sizeof(image_resDesc));
+    image_resDesc.resType = cudaResourceTypePitch2D;
+    image_resDesc.res.pitch2D.devPtr = image.get();
+
+    struct cudaTextureDesc image_texDesc;
+    memset(&image_texDesc, 0, sizeof(image_texDesc));
+    image_texDesc.addressMode[0] = cudaAddressModeClamp;
+    image_texDesc.addressMode[1] = cudaAddressModeClamp;
+    image_texDesc.filterMode = cudaFilterModePoint;
+    image_texDesc.readMode = cudaReadModeElementType;
+    image_texDesc.normalizedCoords = 0;
+
+    cudaTextureObject_t image_tex = 0;
+    cudaCreateTextureObject(&image_tex, &image_resDesc, &image_texDesc, nullptr);
+
     // Launch the dispersion threshold kernel
     dispersion<<<blocks, threads, shared_memory, stream>>>(
-      image.get(),            // Image data pointer
-      mask.get(),             // Mask data pointer
+      image_tex,              // Image data pointer
+      mask_tex,               // Mask texture object
       result_strong->get(),   // Output mask pointer
-      image.pitch,            // Image pitch
-      mask.pitch,             // Mask pitch
       result_strong->pitch,   // Output mask pitch
       width,                  // Image width
       height,                 // Image height
