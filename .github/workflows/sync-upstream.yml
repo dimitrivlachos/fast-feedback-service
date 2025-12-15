@@ -10,6 +10,7 @@ on:
 
 jobs:
   sync:
+    if: false  # Temporarily disabled
     runs-on: ubuntu-latest
     permissions:
       contents: write
