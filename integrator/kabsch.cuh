@@ -29,6 +29,29 @@
 #include "math/vector3d.cuh"
 
 /**
+ * @brief CUDA kernel to compute pixel-to-Kabsch transformations
+ * 
+ * @param s_pixels Array of s_pixel vectors (different for each pixel)
+ * @param phi_pixels Array of phi_pixel angles (different for each pixel)
+ * @param s1_c Reflection center s1 vector (same for all pixels in this batch)
+ * @param phi_c Reflection center phi angle (same for all pixels in this batch)
+ * @param s0 Initial scattering vector
+ * @param rot_axis Rotation axis vector
+ * @param eps_array Output array for Kabsch coordinates
+ * @param s1_len_array Output array for s1 lengths
+ * @param n Number of pixels to process
+ */
+__global__ void kabsch_transform(const fastvec::Vector3D *__restrict__ s_pixels,
+                                 const scalar_t *__restrict__ phi_pixels,
+                                 fastvec::Vector3D s1_c,
+                                 scalar_t phi_c,
+                                 fastvec::Vector3D s0,
+                                 fastvec::Vector3D rot_axis,
+                                 fastvec::Vector3D *eps_array,
+                                 scalar_t *s1_len_array,
+                                 size_t n);
+
+/**
  * @brief Host wrapper function for voxel Kabsch computation
  * 
  * @param h_s_pixels Host array of s_pixel vectors (different for each voxel)

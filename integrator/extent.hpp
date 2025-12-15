@@ -28,6 +28,11 @@ struct BoundingBoxExtents {
     double x_min, x_max;  ///< Detector x-pixel range (fast axis)
     double y_min, y_max;  ///< Detector y-pixel range (slow axis)
     int z_min, z_max;     ///< Image number range (rotation axis)
+
+    // GPU processing metadata (populated during grid calculation)
+    size_t refl_id;    ///< Reflection ID this bbox belongs to
+    int block_offset;  ///< First block index in 1D grid (set by calculate_layer_config)
+    int blocks_x;  ///< Number of blocks in x dimension (set by calculate_layer_config)
 };
 
 /**

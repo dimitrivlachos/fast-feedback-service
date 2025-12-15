@@ -36,6 +36,7 @@
 #include "extent.hpp"
 #include "ffs_logger.hpp"
 #include "h5read.h"
+#include "integrator.cuh"
 #include "kabsch.cuh"
 #include "math/math_utils.cuh"
 #include "version.hpp"
@@ -488,10 +489,50 @@ int main(int argc, char **argv) {
                                   stream);
                 cuda_throw_error();
 
-                // TODO: image processing here
-                // device_image.get() contains the image data on the GPU (pitched allocation)
-                // host_image.get() contains the decompressed pixel data in pinned host memory
-                // reflections_by_image[image_num] contains the reflection IDs for this image
+                // Prepare detector parameters
+                scalar_t pixel_size[2] = {
+                  static_cast<scalar_t>(panel.get_pixel_size()[0]),
+                  static_cast<scalar_t>(panel.get_pixel_size()[1])};
+
+                auto fast_axis_eigen = panel.get_fast_axis();
+                auto slow_axis_eigen = panel.get_slow_axis();
+                auto origin_eigen = panel.get_origin();
+
+                fastvec::Vector3D fast_axis =
+                  fastvec::make_vector3d(static_cast<scalar_t>(fast_axis_eigen.x()),
+                                         static_cast<scalar_t>(fast_axis_eigen.y()),
+                                         static_cast<scalar_t>(fast_axis_eigen.z()));
+                fastvec::Vector3D slow_axis =
+                  fastvec::make_vector3d(static_cast<scalar_t>(slow_axis_eigen.x()),
+                                         static_cast<scalar_t>(slow_axis_eigen.y()),
+                                         static_cast<scalar_t>(slow_axis_eigen.z()));
+                fastvec::Vector3D origin =
+                  fastvec::make_vector3d(static_cast<scalar_t>(origin_eigen.x()),
+                                         static_cast<scalar_t>(origin_eigen.y()),
+                                         static_cast<scalar_t>(origin_eigen.z()));
+
+                call_do_integration(
+                  stream,
+                  device_image,
+                  image_num,
+                  reflections_by_image[image_num],
+                  computed_bboxes,
+                  s1_vectors_converted,
+                  phi_positions_converted_data,
+                  fastvec::make_vector3d(static_cast<scalar_t>(s0.x()),
+                                         static_cast<scalar_t>(s0.y()),
+                                         static_cast<scalar_t>(s0.z())),
+                  fastvec::make_vector3d(static_cast<scalar_t>(rotation_axis.x()),
+                                         static_cast<scalar_t>(rotation_axis.y()),
+                                         static_cast<scalar_t>(rotation_axis.z())),
+                  static_cast<scalar_t>(osc_start),
+                  static_cast<scalar_t>(osc_width),
+                  image_range_start,
+                  static_cast<scalar_t>(wl),
+                  pixel_size,
+                  fast_axis,
+                  slow_axis,
+                  origin);
 
                 logger.trace("Thread {} loaded image {}", thread_id, image_num);
                 completed_images += 1;
