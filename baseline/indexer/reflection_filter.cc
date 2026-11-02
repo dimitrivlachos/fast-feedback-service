@@ -1,3 +1,4 @@
+#pragma once
 #include <Eigen/Dense>
 #include <dx2/beam.hpp>
 #include <dx2/crystal.hpp>
@@ -123,7 +124,7 @@ std::vector<size_t> simple_tukey(std::vector<double> xresid,
 
 /**
  * @brief Perform outlier rejection on a reflection table based on centroid residuals.
- * @param ReflectionTable The reflection table.
+ * @param reflections The reflection table.
  * @returns A reflection table that is a subset of the input table.
  */
 ReflectionTable outlier_filter(ReflectionTable &reflections) {
@@ -218,7 +219,7 @@ ReflectionTable initial_filter(const ReflectionTable &reflections,
             sel[i] = false;
         } else if (hkl(i, 0) == 0 && hkl(i, 1) == 0 && hkl(i, 2) == 0) {
             sel[i] = false;
-        } else if (std::abs(Eigen::Map<Vector3d>(&s1(i, 0)).cross(s0).dot(axis))
+        } else if (std::abs(Eigen::Map<const Vector3d>(&s1(i, 0)).cross(s0).dot(axis))
                    <= close_to_spindle_cutoff) {
             sel[i] = false;
         }

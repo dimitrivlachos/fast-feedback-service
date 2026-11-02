@@ -28,14 +28,15 @@ typedef struct h5_data_file {
     char dsetname[MAXFILENAME];
     hid_t file;
     hid_t dataset;
-    size_t frames;
-    size_t offset;
+    size_t frames;  ///< Number of frames the virtual dataset maps from this file
+    size_t offset;  ///< Index of the first mapped frame within this file
 } h5_data_file;
 
 struct _h5read_handle {
     hid_t master_file;
     int data_file_count;
     h5_data_file *data_files;
+    h5read_dtype dtype;
     size_t frames;  ///< Number of frames in this dataset
     size_t slow;    ///< Pixel dimension of images in the slow direction
     size_t fast;    ///< Pixel dimensions of images in the fast direction
@@ -43,7 +44,8 @@ struct _h5read_handle {
     uint8_t *mask;         ///< Shared image mask
     uint8_t *module_mask;  ///< Shared module mask
     size_t mask_size;      ///< Total size(in pixels) of mask
-    image_t_type trusted_range_min,
+    // Wide enough for both 16- and 32-bit pixel data
+    int64_t trusted_range_min,
       trusted_range_max;  ///< Trusted range of this dataset
     float wavelength;     ///< Wavelength of the X-ray beam
 
@@ -54,35 +56,48 @@ struct _h5read_handle {
     float oscillation_width;
 };
 
-/// Validate that the HDF5 datatype size matches the expected pixel data size
-///
-/// @param datatype The HDF5 datatype to validate
-static void _validate_data_type_size(hid_t datatype) {
-    size_t datasize = H5Tget_size(datatype);
-#ifdef PIXEL_DATA_32BIT
-    if (datasize != 4) {
-        fprintf(stderr,
-                "Error: Expected 32-bit data but got %zu bytes. Use "
-                "-DPIXEL_DATA_32BIT=OFF for 16-bit data.\n",
-                datasize);
-        exit(1);
-    }
-#else
-    if (datasize != 2) {
-        fprintf(stderr,
-                "Error: Expected 16-bit data but got %zu bytes. Use "
-                "-DPIXEL_DATA_32BIT=ON for 32-bit data.\n",
-                datasize);
-        exit(1);
-    }
+#ifdef HAVE_HDF5
+static h5read_dtype _detect_hdf5_dtype(hid_t datatype);
 #endif
+
+/// Match dtypes for debugging.
+///
+/// @param dtype The dtype to name
+/// @return A static string naming the dtype
+static const char *_dtype_name(h5read_dtype dtype) {
+    switch (dtype) {
+    case H5READ_DTYPE_UINT8:
+        return "uint8";
+    case H5READ_DTYPE_UINT16:
+        return "uint16";
+    case H5READ_DTYPE_UINT32:
+        return "uint32";
+    case H5READ_DTYPE_INT8:
+        return "int8";
+    case H5READ_DTYPE_INT16:
+        return "int16";
+    case H5READ_DTYPE_INT32:
+        return "int32";
+    case H5READ_DTYPE_FLOAT32:
+        return "float32";
+    case H5READ_DTYPE_FLOAT64:
+        return "float64";
+    default:
+        return "unknown";
+    }
 }
+
+h5read_dtype h5read_get_dtype(h5read_handle *obj) { return obj->dtype; }
 
 void h5read_free(h5read_handle *obj) {
 #ifdef HAVE_HDF5
     for (int i = 0; i < obj->data_file_count; i++) {
-        H5Dclose(obj->data_files[i].dataset);
-        H5Fclose(obj->data_files[i].file);
+        if (obj->data_files[i].dataset != 0) {
+            H5Dclose(obj->data_files[i].dataset);
+        }
+        if (obj->data_files[i].file != 0) {
+            H5Fclose(obj->data_files[i].file);
+        }
     }
     if (obj->master_file) H5Fclose(obj->master_file);
 #endif
@@ -94,17 +109,11 @@ void h5read_free(h5read_handle *obj) {
 }
 
 /// Get the number of frames available
-size_t h5read_get_number_of_images(h5read_handle *obj) {
-    return obj->frames;
-}
+size_t h5read_get_number_of_images(h5read_handle *obj) { return obj->frames; }
 
-size_t h5read_get_image_slow(h5read_handle *obj) {
-    return obj->slow;
-}
+size_t h5read_get_image_slow(h5read_handle *obj) { return obj->slow; }
 
-size_t h5read_get_image_fast(h5read_handle *obj) {
-    return obj->fast;
-}
+size_t h5read_get_image_fast(h5read_handle *obj) { return obj->fast; }
 
 void h5read_free_image(image_t *i) {
     free(i->data);
@@ -112,9 +121,7 @@ void h5read_free_image(image_t *i) {
     free(i);
 }
 
-uint8_t *h5read_get_mask(h5read_handle *obj) {
-    return obj->mask;
-}
+uint8_t *h5read_get_mask(h5read_handle *obj) { return obj->mask; }
 
 /// blit the relevent pixel data across from a single image into a collection
 /// of image modules - will allocate the latter
@@ -285,35 +292,141 @@ int _find_data_file_for_image(h5read_handle *obj, size_t *index) {
     return data_file;
 }
 
-size_t h5read_get_chunk_size(h5read_handle *obj, size_t index) {
-    if (obj->data_files == 0) {
-        fprintf(stderr, "Error: Cannot do direct chunk read with sample data\n", index);
+/// Get the data file object, opening the data file if possible.
+///
+/// This will always return (barring fatal errors) a valid h5_data_file
+/// object. The .file and .dataset members may not be present, if the
+/// file can not be currently opened.
+h5_data_file *get_data_file(h5read_handle *obj, size_t index) {
+    if (index >= obj->data_file_count) {
+        fprintf(stderr, "Error: Could not find data file for frame %ld\n", index);
         exit(1);
     }
+    h5_data_file *current = &(obj->data_files[index]);
+    if (current->file == 0) {
+        if (access(current->filename, F_OK) == 0) {
+            printf("Opening data file %s\n", current->filename);
+            hid_t file = H5Fopen(
+              current->filename, H5F_ACC_RDONLY | H5F_ACC_SWMR_READ, H5P_DEFAULT);
+            // Failing to open a data file isn't necessarily an error - it could not
+            // exist yet
+            if (file > 0) {
+                current->file = file;
+            }
+        }
+    }
+    if (current->file != 0 && current->dataset == 0) {
+        hid_t dataset = H5Dopen(current->file, current->dsetname, H5P_DEFAULT);
+        if (dataset < 0) {
+            fprintf(
+              stderr, "Error: Reading datasets of child file %s\n", current->filename);
+            exit(1);
+        }
+        current->dataset = dataset;
+        // Now we have a dataset, validate that it matches our expected layout
+        hid_t datatype = H5Dget_type(dataset);
+        // Every data file behind one VDS has to share a dtype, because the
+        // pixel size is fixed once for the whole handle
+        h5read_dtype file_dtype = _detect_hdf5_dtype(datatype);
+        if (file_dtype != obj->dtype) {
+            fprintf(stderr,
+                    "Fatal Error: Data file %s holds %s, but this dataset is "
+                    "being read as %s\n",
+                    current->filename,
+                    _dtype_name(file_dtype),
+                    _dtype_name(obj->dtype));
+            exit(1);
+        }
+        H5Tclose(datatype);
+        hid_t space = H5Dget_space(dataset);
+        if (H5Sget_simple_extent_ndims(space) != 3) {
+            fprintf(stderr,
+                    "Error: Data file %s data are not three dimensional\n",
+                    current->filename);
+            exit(1);
+        }
+        hsize_t dims[3];
+        H5Sget_simple_extent_dims(space, dims, NULL);
+        H5Sclose(space);
+        // Do a load of validation that this data file matches what we expect.
+        // A virtual dataset can map a sub-range of a longer source file, so the
+        // source only has to be long enough to cover the range that is mapped.
+        if (current->offset + current->frames > dims[0]) {
+            fprintf(stderr,
+                    "Validation Error: Data file %s data has %ld frames, too few "
+                    "for the %ld mapped from frame %ld\n",
+                    current->filename,
+                    dims[0],
+                    current->frames,
+                    current->offset);
+            exit(1);
+        }
+        if (dims[1] != obj->slow) {
+            fprintf(stderr,
+                    "Validation Error: Data file %s slow data has %ld pixels, "
+                    "expected %ld\n",
+                    current->filename,
+                    dims[1],
+                    obj->slow);
+            exit(1);
+        }
+        if (dims[2] != obj->fast) {
+            fprintf(stderr,
+                    "Validation Error: Data file %s fast data has %ld pixels, "
+                    "expected %ld\n",
+                    current->filename,
+                    dims[2],
+                    obj->fast);
+            exit(1);
+        }
+    }
+    return current;
+}
+
+size_t h5read_get_chunk_size(h5read_handle *obj, size_t index) {
 #ifdef HAVE_HDF5
     int data_file = _find_data_file_for_image(obj, &index);
     if (data_file == obj->data_file_count) {
         fprintf(stderr, "Error: Could not find data file for frame %ld\n", index);
         exit(1);
     }
-    h5_data_file *current = &(obj->data_files[data_file]);
-
+    h5_data_file *current = get_data_file(obj, data_file);
+    // Count a missing file as "zero" size for the dataset
+    if (current->file == 0) {
+        return 0;
+    }
     hsize_t offset[3] = {index + current->offset, 0, 0};
     hsize_t chunk_size = 0;
-    // H5Drefresh(current->dataset);
+
+    // No way to check without hitting HDF5 error handler if it is missing,
+    // and thus a whole load of error output. Save and clear the error
+    // handler for this call so we don't hit that.
+    H5E_auto2_t old_func;
+    void *old_data;
+    H5Eget_auto(H5E_DEFAULT, &old_func, &old_data);
+    H5Eset_auto(H5E_DEFAULT, NULL, NULL);
+    // Check to see if this chunk is allocated yet
     H5Dget_chunk_storage_size(current->dataset, offset, &chunk_size);
-#endif
+
+    // If this failed, refresh the file then try again
+    if (chunk_size <= 0) {
+        H5Drefresh(current->dataset);
+        H5Dget_chunk_storage_size(current->dataset, offset, &chunk_size);
+    }
+    // Restore error handler
+    H5Eset_auto(H5E_DEFAULT, old_func, old_data);
     if (chunk_size < 0) {
         return 0;
     }
     return (size_t)chunk_size;
+#else
+    fprintf(stderr, "Error: Cannot do direct chunk read with sample data\n", index);
+    exit(1);
+#endif
 }
 
-void h5read_get_raw_chunk(h5read_handle *obj,
-                          size_t index,
-                          size_t *size,
-                          uint8_t *data,
-                          size_t max_size) {
+void h5read_get_raw_chunk(
+  h5read_handle *obj, size_t index, size_t *size, uint8_t *data, size_t max_size) {
     if (obj->data_files == 0) {
         fprintf(stderr, "Error: Cannot do direct chunk read with sample data\n", index);
         exit(1);
@@ -324,8 +437,12 @@ void h5read_get_raw_chunk(h5read_handle *obj,
         fprintf(stderr, "Error: Could not find data file for frame %ld\n", index);
         exit(1);
     }
-    h5_data_file *current = &(obj->data_files[data_file]);
-
+    h5_data_file *current = get_data_file(obj, data_file);
+    // Count a missing file as fatal error here
+    if (current->file == 0) {
+        fprintf(stderr, "Error: Trying to read raw chunk for missing file\n");
+        exit(1);
+    }
     hsize_t offset[3] = {index + current->offset, 0, 0};
     hsize_t chunk_size = 0;
     H5Dget_chunk_storage_size(current->dataset, offset, &chunk_size);
@@ -335,9 +452,6 @@ void h5read_get_raw_chunk(h5read_handle *obj,
         fprintf(stderr, "Error: Not enough room to store compressed chunk\n");
         exit(1);
     }
-
-    hid_t datatype = H5Dget_type(current->dataset);
-    _validate_data_type_size(datatype);
 
     uint32_t filter = 0;
     herr_t err = H5Dread_chunk(current->dataset, H5P_DEFAULT, offset, &filter, data);
@@ -365,7 +479,7 @@ void h5read_get_image_into(h5read_handle *obj, size_t index, image_t_type *data)
 
 #ifdef HAVE_HDF5
     /* first find the right data file - having to do this lookup is annoying
-     but probably cheap */
+   but probably cheap */
     int data_file = _find_data_file_for_image(obj, &index);
 
     if (data_file == obj->data_file_count) {
@@ -409,36 +523,22 @@ image_t *h5read_get_image(h5read_handle *obj, size_t n) {
     return result;
 }
 
-void h5read_get_trusted_range(h5read_handle *obj,
-                              image_t_type *min,
-                              image_t_type *max) {
-    if (min != NULL) {
-        *min = obj->trusted_range_min;
-    }
-    if (max != NULL) {
-        *max = obj->trusted_range_max;
-    }
+int64_t h5read_get_trusted_range_min(h5read_handle *obj) {
+    return obj->trusted_range_min;
+}
+int64_t h5read_get_trusted_range_max(h5read_handle *obj) {
+    return obj->trusted_range_max;
 }
 
-float h5read_get_wavelength(h5read_handle *obj) {
-    return obj->wavelength;
-}
+float h5read_get_wavelength(h5read_handle *obj) { return obj->wavelength; }
 
-float h5read_get_pixel_size_slow(h5read_handle *obj) {
-    return obj->pixel_size_x;
-}
-float h5read_get_pixel_size_fast(h5read_handle *obj) {
-    return obj->pixel_size_y;
-}
+float h5read_get_pixel_size_slow(h5read_handle *obj) { return obj->pixel_size_x; }
+float h5read_get_pixel_size_fast(h5read_handle *obj) { return obj->pixel_size_y; }
 float h5read_get_detector_distance(h5read_handle *obj) {
     return obj->detector_distance;
 }
-float h5read_get_beam_center_x(h5read_handle *obj) {
-    return obj->beam_center_x;
-}
-float h5read_get_beam_center_y(h5read_handle *obj) {
-    return obj->beam_center_y;
-}
+float h5read_get_beam_center_x(h5read_handle *obj) { return obj->beam_center_x; }
+float h5read_get_beam_center_y(h5read_handle *obj) { return obj->beam_center_y; }
 float h5read_get_oscillation_start(h5read_handle *obj) {
     return obj->oscillation_start;
 }
@@ -561,9 +661,12 @@ void read_mask(h5read_handle *obj) {
     H5Dclose(mask_dataset);
 }
 
-/// Read a single float value out of an HDF5 dataset
+/// Read a single integer value out of an HDF5 dataset
 ///
 /// If the dataset is present, but cannot be read, terminates the program.
+///
+/// Reads into a type wide enough for both 16- and 32-bit pixel data, letting
+/// HDF5 convert from whatever type the file holds.
 ///
 /// @param      origin          The root file or group to read the path from
 /// @param      path            The path from the origin to open
@@ -571,15 +674,13 @@ void read_mask(h5read_handle *obj) {
 /// successful.
 ///
 /// @return The HDF error code (negative) if opening the dataset failed, or 0
-herr_t _read_single_value_image_t_type(hid_t origin,
-                                       const char *dataset_path,
-                                       image_t_type *destination) {
+herr_t _read_single_value_int64(hid_t origin,
+                                const char *dataset_path,
+                                int64_t *destination) {
     hid_t dataset = H5Dopen(origin, dataset_path, H5P_DEFAULT);
     if (dataset < 0) {
         return dataset;
     }
-    hid_t datatype = H5Dget_type(dataset);
-    size_t datatype_size = H5Tget_size(datatype);
     hid_t dataspace = H5Dget_space(dataset);
     size_t num_elements = H5Sget_simple_extent_npoints(dataspace);
 
@@ -593,25 +694,8 @@ herr_t _read_single_value_image_t_type(hid_t origin,
                 dataset_path);
         exit(1);
     }
-    if (datatype_size < sizeof(image_t_type)) {
-        char name[256] = "\0";
-        H5Iget_name(origin, name, 256);
-
-        fprintf(stderr,
-                "Error: While reading %s%s: Value of size %zu is smaller than data "
-                "type\n",
-                name,
-                dataset_path,
-                datatype_size);
-        exit(1);
-    }
-#ifdef PIXEL_DATA_32BIT
-    if (H5Dread(dataset, H5T_NATIVE_UINT32, H5S_ALL, H5S_ALL, H5P_DEFAULT, destination)
+    if (H5Dread(dataset, H5T_NATIVE_INT64, H5S_ALL, H5S_ALL, H5P_DEFAULT, destination)
         < 0) {
-#else
-    if (H5Dread(dataset, H5T_NATIVE_UINT16, H5S_ALL, H5S_ALL, H5P_DEFAULT, destination)
-        < 0) {
-#endif
         char name[256] = "\0";
         H5Iget_name(origin, name, 256);
         fprintf(stderr,
@@ -681,26 +765,47 @@ herr_t _read_single_value_float(hid_t origin, const char *path, float *destinati
     return 0;
 }
 
+/// Largest value a dtype can hold, as a trusted maximum
+///
+/// Floating point and unrecognised types have no integer bound to offer, so
+/// they trust everything.
+static int64_t _dtype_max(h5read_dtype dtype) {
+    switch (dtype) {
+    case H5READ_DTYPE_UINT8:
+        return UINT8_MAX;
+    case H5READ_DTYPE_INT8:
+        return INT8_MAX;
+    case H5READ_DTYPE_UINT16:
+        return UINT16_MAX;
+    case H5READ_DTYPE_INT16:
+        return INT16_MAX;
+    case H5READ_DTYPE_UINT32:
+        return UINT32_MAX;
+    case H5READ_DTYPE_INT32:
+        return INT32_MAX;
+    default:
+        return INT64_MAX;
+    }
+}
+
 void read_trusted_range(h5read_handle *obj) {
+    // Absent a saturation value in the file, everything the data's own type
+    // can express is trusted.
     obj->trusted_range_min = 0;
-#ifdef PIXEL_DATA_32BIT
-    obj->trusted_range_max = UINT32_MAX;
-#else
-    obj->trusted_range_max = UINT16_MAX;
-#endif
+    obj->trusted_range_max = _dtype_max(obj->dtype);
 
     // Try to read saturation value, but don't fail if it doesn't exist
-    if (_read_single_value_image_t_type(obj->master_file,
-                                        "/entry/instrument/detector/saturation_value",
-                                        &obj->trusted_range_max)
+    if (_read_single_value_int64(obj->master_file,
+                                 "/entry/instrument/detector/saturation_value",
+                                 &obj->trusted_range_max)
         < 0) {
         fprintf(stderr, "Warning: No saturation_value found, using maximum value\n");
     }
 
     // Try to read underload value, but don't fail if it doesn't exist
-    if (_read_single_value_image_t_type(obj->master_file,
-                                        "/entry/instrument/detector/underload_value",
-                                        &obj->trusted_range_min)
+    if (_read_single_value_int64(obj->master_file,
+                                 "/entry/instrument/detector/underload_value",
+                                 &obj->trusted_range_min)
         < 0) {
         fprintf(stderr, "Warning: No underload_value found, using 0\n");
     }
@@ -858,11 +963,11 @@ int vds_info(char *root, hid_t master, hid_t dataset, h5_data_file **data_files_
                   buffer, info.u.val_size, &flags, &nameptr, &dsetptr);
 
                 /* assumptions herein:
-            - external link references are local paths
-            - only need to worry about UNIX paths e.g. pathsep is /
-            - ASCII so chars are ... chars
-           so manually assemble...
-         */
+    - external link references are local paths
+    - only need to worry about UNIX paths e.g. pathsep is /
+    - ASCII so chars are ... chars
+   so manually assemble...
+ */
 
                 strcpy(scr, root);
                 scr[strlen(root)] = '/';
@@ -878,7 +983,7 @@ int vds_info(char *root, hid_t master, hid_t dataset, h5_data_file **data_files_
             strcpy(vds[j].filename, scr);
         }
 
-        // do I want to open these here? Or when they are needed...
+        // These will be opened when required
         vds[j].file = 0;
         vds[j].dataset = 0;
     }
@@ -928,26 +1033,95 @@ int unpack_vds(const char *filename, h5_data_file **data_files) {
     return vds_count;
 }
 
+/// Detect the h5read_dtype from an HDF5 datatype
+///
+/// @param datatype The HDF5 datatype to detect
+/// @return The detected h5read_dtype, or H5READ_DTYPE_UNKNOWN if unsupported
+static h5read_dtype _detect_hdf5_dtype(hid_t datatype) {
+    H5T_class_t type_class = H5Tget_class(datatype);
+    size_t size = H5Tget_size(datatype);
+    H5T_sign_t sign = H5Tget_sign(datatype);
+    if (type_class == H5T_INTEGER) {
+        if (sign == H5T_SGN_NONE) {  // unsigned
+            if (size == 1) return H5READ_DTYPE_UINT8;
+            if (size == 2) return H5READ_DTYPE_UINT16;
+            if (size == 4) return H5READ_DTYPE_UINT32;
+        } else {  // signed
+            if (size == 1) return H5READ_DTYPE_INT8;
+            if (size == 2) return H5READ_DTYPE_INT16;
+            if (size == 4) return H5READ_DTYPE_INT32;
+        }
+    } else if (type_class == H5T_FLOAT) {
+        if (size == 4) return H5READ_DTYPE_FLOAT32;
+        if (size == 8) return H5READ_DTYPE_FLOAT64;
+    }
+    return H5READ_DTYPE_UNKNOWN;
+}
+
+/// Detect the pixel dtype from the first readable data file.
+///
+/// Files are opened and closed independently of the handles cached in
+/// get_data_file, so this is safe to call before any frame is read. A
+/// data file that does not exist yet is normal partway through a live
+/// collection, hence the tolerance of a failure to open one.
+///
+/// @param obj The h5read handle, with its VDS already unpacked
+/// @return The dtype of the first data file that could be read, or
+///         H5READ_DTYPE_UNKNOWN if none of them could be
+static h5read_dtype _dtype_from_data_files(h5read_handle *obj) {
+    for (int i = 0; i < obj->data_file_count; i++) {
+        h5_data_file *current = &(obj->data_files[i]);
+        if (access(current->filename, F_OK) != 0) {
+            continue;
+        }
+        hid_t file =
+          H5Fopen(current->filename, H5F_ACC_RDONLY | H5F_ACC_SWMR_READ, H5P_DEFAULT);
+        if (file < 0) {
+            continue;
+        }
+        hid_t dataset = H5Dopen(file, current->dsetname, H5P_DEFAULT);
+        if (dataset < 0) {
+            H5Fclose(file);
+            continue;
+        }
+        hid_t datatype = H5Dget_type(dataset);
+        h5read_dtype dtype = _detect_hdf5_dtype(datatype);
+        H5Tclose(datatype);
+        H5Dclose(dataset);
+        H5Fclose(file);
+        return dtype;
+    }
+    return H5READ_DTYPE_UNKNOWN;
+}
+
 void setup_data(h5read_handle *obj) {
-    hid_t dataset = obj->data_files[0].dataset;
-    hid_t datatype = H5Dget_type(dataset);
+    hid_t vds_dataset = H5Dopen2(obj->master_file, "/entry/data/data", H5P_DEFAULT);
 
-    _validate_data_type_size(datatype);
-
-    hid_t space = H5Dget_space(dataset);
+    hid_t space = H5Dget_space(vds_dataset);
 
     if (H5Sget_simple_extent_ndims(space) != 3) {
-        fprintf(stderr, "raw data not three dimensional\n");
+        fprintf(stderr, "VDS data not three dimensional\n");
         exit(1);
     }
 
     hsize_t dims[3];
     H5Sget_simple_extent_dims(space, dims, NULL);
 
+    obj->frames = dims[0];
     obj->slow = dims[1];
     obj->fast = dims[2];
 
+    obj->dtype = _dtype_from_data_files(obj);
+    if (obj->dtype == H5READ_DTYPE_UNKNOWN) {
+        // No data file is readable yet, so the VDS is the only description
+        // available. get_data_file rejects any file that later disagrees.
+        hid_t datatype = H5Dget_type(vds_dataset);
+        obj->dtype = _detect_hdf5_dtype(datatype);
+        H5Tclose(datatype);
+    }
+
     printf("Total data size: %ldx%ldx%ld\n", obj->frames, obj->slow, obj->fast);
+    H5Dclose(vds_dataset);
     H5Sclose(space);
 }
 
@@ -971,32 +1145,6 @@ h5read_handle *h5read_open(const char *master_filename) {
         H5Fclose(master_file);
         free(file);
         return NULL;
-    }
-
-    // open up the actual data files, count all the frames
-    file->frames = 0;
-    h5_data_file *data_files = file->data_files;
-    for (int j = 0; j < file->data_file_count; j++) {
-        data_files[j].file = H5Fopen(
-          data_files[j].filename, H5F_ACC_RDONLY | H5F_ACC_SWMR_READ, H5P_DEFAULT);
-        if (data_files[j].file < 0) {
-            fprintf(stderr, "Error: Opening child file %s\n", data_files[j].filename);
-            H5Fclose(master_file);
-            free(file);
-            return NULL;
-        }
-        data_files[j].dataset =
-          H5Dopen(data_files[j].file, data_files[j].dsetname, H5P_DEFAULT);
-        if (data_files[j].dataset < 0) {
-            fprintf(stderr,
-                    "Error: Reading datasets of child file %s\n",
-                    data_files[j].filename);
-            H5Fclose(data_files[j].file);
-            H5Fclose(master_file);
-            free(file);
-            return NULL;
-        }
-        file->frames += data_files[j].frames;
     }
 
     read_trusted_range(file);
@@ -1167,4 +1315,23 @@ h5read_handle *h5read_parse_standard_args(int argc, char **argv) {
         exit(1);
     }
     return handle;
+}
+
+size_t h5read_dtype_size(h5read_dtype dtype) {
+    switch (dtype) {
+    case H5READ_DTYPE_UINT8:
+    case H5READ_DTYPE_INT8:
+        return 1;
+    case H5READ_DTYPE_UINT16:
+    case H5READ_DTYPE_INT16:
+        return 2;
+    case H5READ_DTYPE_UINT32:
+    case H5READ_DTYPE_INT32:
+    case H5READ_DTYPE_FLOAT32:
+        return 4;
+    case H5READ_DTYPE_FLOAT64:
+        return 8;
+    default:
+        return 0;
+    }
 }

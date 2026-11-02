@@ -34,11 +34,11 @@ if (Dials_FOUND)
     target_link_libraries(baseline_dials PUBLIC Dials::Dials h5read)
 endif()
 
-add_library(standalone SHARED standalone.cc )
+# Static so the spotfinder binaries absorb it and nothing has to be
+# installed alongside them or resolved at runtime.
+add_library(standalone STATIC standalone.cc )
 target_link_libraries(standalone PUBLIC h5read)
 target_include_directories(standalone PUBLIC .)
-
-install(TARGETS standalone LIBRARY COMPONENT Runtime)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     find_package(benchmark)
@@ -54,6 +54,6 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         target_link_libraries(miniapp PUBLIC baseline_dials h5read)
 
         add_executable(check_no_tbx check_no_tbx.cc)
-        target_link_libraries(check_no_tbx PUBLIC baseline_dials h5read standalone fmt)
+        target_link_libraries(check_no_tbx PUBLIC baseline_dials h5read standalone fmt::fmt)
     endif()
 endif()

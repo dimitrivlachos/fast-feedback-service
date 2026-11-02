@@ -4,7 +4,6 @@ find_package(LZ4 REQUIRED)
 find_package(Bitshuffle REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(Boost REQUIRED COMPONENTS graph)
-find_package(lodepng)
 
 add_executable(spotfinder
     spotfinder.cc
@@ -18,7 +17,7 @@ add_executable(spotfinder
 )
 target_link_libraries(spotfinder
     PRIVATE
-    fmt
+    fmt::fmt
     h5read
     argparse
     standalone
@@ -39,4 +38,42 @@ set_property(TARGET spotfinder PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 target_compile_options(spotfinder PRIVATE "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CUDA>>:-G>")
 target_compile_options(spotfinder PRIVATE "$<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:--generate-line-info>")
 
-install(TARGETS spotfinder RUNTIME COMPONENT Runtime)
+install(TARGETS spotfinder RUNTIME DESTINATION ${FFS_INSTALL_BINDIR} COMPONENT ffs)
+
+
+add_executable(spotfinder32
+    spotfinder.cc
+    spotfinder.cu
+    shmread.cc
+    cbfread.cc
+    kernels/masking.cu
+    kernels/thresholding.cu
+    kernels/erosion.cu
+    connected_components/connected_components.cc
+)
+target_link_libraries(spotfinder32
+    PRIVATE
+    fmt::fmt
+    h5read
+    argparse
+    standalone
+    LZ4::LZ4
+    Bitshuffle::bitshuffle
+    CUDA::cudart
+    Boost::graph
+    lodepng
+    nlohmann_json::nlohmann_json
+    spdlog::spdlog
+    dx2
+    version
+    ffs_common
+    cuda_parser
+)
+target_compile_definitions(spotfinder32 PRIVATE PIXEL_DATA_32BIT)
+set_property(TARGET spotfinder32 PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+target_compile_options(spotfinder32 PRIVATE "$<$<AND:$<CONFIG:Debug>,$<COMPILE_LANGUAGE:CUDA>>:-G>")
+target_compile_options(spotfinder32 PRIVATE "$<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>>:--generate-line-info>")
+
+install(TARGETS spotfinder32 RUNTIME DESTINATION ${FFS_INSTALL_BINDIR} COMPONENT ffs)
+
+add_subdirectory(tests)

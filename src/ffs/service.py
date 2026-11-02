@@ -5,19 +5,29 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import threading
 import time
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Literal, Optional, Union
 
+import gemmi
+import numpy as np
+import pydantic
 import workflows.recipe
-from pydantic import BaseModel, ValidationError
-from rich.logging import RichHandler
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 from workflows.services.common_service import CommonService
+
+import ffs.index
+from ffs._common import (
+    DeviceProbeFailed,
+    ExecutableNotFound,
+    find_executable,
+    setup_rich_logging,
+)
+from ffs.ssx_index import GPUIndexer
 
 logger = logging.getLogger(__name__)
 logger.level = logging.DEBUG
@@ -39,48 +49,114 @@ class PiaRequest(BaseModel):
     detector_distance: float
     d_min: float | None = None
     d_max: float | None = None
+    unit_cell: tuple[float, float, float, float, float, float] | None = None
+    detector: str = "Eiger16M"
+
+    @pydantic.validator("unit_cell", pre=True)
+    def check_unit_cell(cls, v):
+        if not v:
+            return None
+        orig_v = v
+        if isinstance(v, str):
+            v = v.replace(",", " ").split()
+        v = [float(v) for v in v]
+        try:
+            assert len(v) == 6
+        except Exception:
+            raise ValueError(f"Invalid unit_cell {orig_v}")
+        return v
+
+
+class Material(str, Enum):
+    Si = "Si"
+    CdTe = "CdTe"
+
+
+class DetectorParameters(BaseModel):
+    """
+    Define a set of detector metadata that derived classes
+    need to provide.
+    This class is not to be instantiated directly.
+    """
+
+    detector_type: str
+    thickness: float
+    material: Material
+    pixel_size_x: float
+    pixel_size_y: float
+    image_size_x: int
+    image_size_y: int
+    # mu cache not serialized to dict/json, ok as mu not needed for spotfinder
+    _mu_cache: dict = PrivateAttr(default_factory=dict)
+
+    def __init_subclass__(cls, **kwargs):
+        # enforce setting of defaults for all fields in subclasses.
+        super().__init_subclass__(**kwargs)
+        missing_defaults = [
+            name
+            for name, field in cls.__fields__.items()
+            if field.default is None and field.default_factory is None
+        ]
+        if missing_defaults:
+            raise TypeError(
+                f"{cls.__name__} must define default values for all fields: missing {missing_defaults}"
+            )
+
+    def calculate_mu(self, wavelength: float) -> float:
+        if wavelength not in self._mu_cache:
+            self._mu_cache[wavelength] = (
+                ffs.index.calculate_mu_for_material_at_wavelength(
+                    self.material, wavelength
+                )
+            )
+        return self._mu_cache[wavelength]
+
+
+class Eiger16M(DetectorParameters):
+    detector_type: Literal["Eiger16M"]
+    thickness: float = 0.45
+    material: Material = Material.Si
+    pixel_size_x: float = 0.075
+    pixel_size_y: float = 0.075
+    image_size_x: int = 4148
+    image_size_y: int = 4362
+
+
+class Eiger4M(DetectorParameters):
+    detector_type: Literal["Eiger4M"]
+    thickness: float = 0.45
+    material: Material = Material.Si
+    pixel_size_x: float = 0.075
+    pixel_size_y: float = 0.075
+    image_size_x: int = 2068
+    image_size_y: int = 2162
+
+
+class Eiger9MCdTe(DetectorParameters):
+    detector_type: Literal["Eiger9MCdTe"]
+    thickness: float = 0.75
+    material: Material = Material.CdTe
+    pixel_size_x: float = 0.075
+    pixel_size_y: float = 0.075
+    image_size_x: int = 3108
+    image_size_y: int = 3262
 
 
 class DetectorGeometry(BaseModel):
-    pixel_size_x: float = 0.075  # Default value for Eiger
-    pixel_size_y: float = 0.075  # Default value for Eiger
     distance: float
     beam_center_x: float
     beam_center_y: float
+    detector: Union[Eiger9MCdTe, Eiger16M, Eiger4M] = Field(
+        ..., discriminator="detector_type"
+    )
 
     def to_json(self):
-        return json.dumps(self.dict(), indent=4)
+        d = self.dict()
+        d.update(self.detector.dict())
+        return json.dumps(d, indent=4)
 
 
-def _setup_rich_logging(level=logging.DEBUG):
-    """Setup a rich-based logging output. Using for debug running."""
-    rootLogger = logging.getLogger()
-
-    for handler in list(rootLogger.handlers):
-        # We want to replace the streamhandler
-        if isinstance(handler, logging.StreamHandler):
-            rootLogger.handlers.remove(handler)
-        # We also want to lower the output level, so pin this to the existing
-        handler.setLevel(rootLogger.level)
-
-    # Check if we're in a TTY (interactive) or not (k8s container)
-    is_tty = sys.stdout.isatty()
-
-    if is_tty:
-        # Interactive mode: use RichHandler with formatting
-        rootLogger.handlers.append(
-            RichHandler(level=level, log_time_format="[%Y-%m-%d %H:%M:%S]")
-        )
-    else:
-        # Container mode: simple output for Graylog
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(level)
-        # Simple format: just the message
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        rootLogger.handlers.append(handler)
-
-
-def _find_spotfinder() -> Path:
+def _find_spotfinder() -> tuple[Path, Path]:
     """
     Finds and sets the path to the spotfinder executable
 
@@ -88,45 +164,31 @@ def _find_spotfinder() -> Path:
 
     Returns:
         Path: The path to the spotfinder executable
+
+    Raises:
+        ExecutableNotFound: Either variant is missing.
+        DeviceProbeFailed: A variant ran but could not enumerate GPU
+            devices.
     """
-    # Try to get the path from the environment
-    spotfinder_path: str | Path | None = os.getenv("SPOTFINDER")
+    spotfinder_path = find_executable("SPOTFINDER", "spotfinder")
 
-    if not spotfinder_path:
-        spotfinder_path = shutil.which("spotfinder")
+    # Make sure that we have a spotfinder32 at the same location
+    spotfinder_32 = spotfinder_path.parent / "spotfinder32"
+    if not spotfinder_32.is_file():
+        raise ExecutableNotFound("Could not find spotfinder32 variant")
 
-    # If environment variable is not set, check for directories
-    if spotfinder_path is None:
-        logger.warning(
-            "SPOTFINDER environment variable not set, and cannot find in PATH"
-        )
-
-        for path in {"build", "_build", "."}:
-            if Path(path).exists():
-                spotfinder_path = path
-            logger.debug("No spotfinder found at %s", path)
-
-    # This must be set, and must exist
-    if not spotfinder_path or not Path(spotfinder_path).is_file():
-        logger.fatal(
-            "Error: Could not find spotfinder executable. Please set SPOTFINDER environment variable."
-        )
-        sys.exit(1)
-
-    spotfinder_path = Path(spotfinder_path)
-
-    # Let's run this, to enumerate GPU and check it works
     proc = subprocess.run(
-        [spotfinder_path, "--list-devices"], capture_output=True, text=True
+        [spotfinder_32, "--list-devices"], capture_output=True, text=True
     )
     if proc.returncode:
-        logger.fatal(
-            f"Error: Spotfinder at {spotfinder_path} failed to enumerate devices."
+        detail = (
+            proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
         )
-        sys.exit(1)
+        raise DeviceProbeFailed(
+            f"Found spotfinder32 but it failed to enumerate devices: {detail}"
+        )
 
-    logger.info(f"Using spotfinder: {spotfinder_path}")
-    return spotfinder_path
+    return (spotfinder_path, spotfinder_32)
 
 
 class MessageOrderResolver:
@@ -177,11 +239,11 @@ class MessageOrderResolver:
 class GPUPerImageAnalysis(CommonService):
     _service_name = "GPU Per-Image-Analysis"
     _logger_name = "spotfinder.service"
-    _spotfinder_executable: Path
+    _spotfinder_executable: tuple[Path, Path]
     _spotfind_proc: subprocess.Popen | None = None
 
     def initializing(self):
-        _setup_rich_logging()
+        setup_rich_logging()
         # self.log.debug("Checking Node GPU capabilities")
         # TODO: Write node sanity checks
         workflows.recipe.wrap_subscribe(
@@ -193,6 +255,15 @@ class GPUPerImageAnalysis(CommonService):
         )
         self._spotfinder_executable = _find_spotfinder()
         self._order_resolver = MessageOrderResolver(self.log)
+        ## Initialise the fast-feedback-indexer
+        self.indexer = None
+        self.output_for_index = False  # Only turn on when we have confirmed all the things we need (cell, etc)
+        try:
+            self.indexer = GPUIndexer()
+        except ModuleNotFoundError:
+            self.log.debug(
+                "ffbidx not found, has the fast-feedback-indexer module been built and sourced?"
+            )
 
     def gpu_per_image_analysis(
         self,
@@ -215,12 +286,40 @@ class GPUPerImageAnalysis(CommonService):
                 distance=parameters.detector_distance,
                 beam_center_x=parameters.xBeam,
                 beam_center_y=parameters.yBeam,
+                detector={"detector_type": parameters.detector},
             )
             self.log.debug("{detector_geometry.to_json()=}")
         except ValidationError as e:
             self.log.warning(
                 f"Rejecting PIA request for {parameters.dcgid}/{parameters.message_index}({parameters.dcid}): Invalid detector parameters \n{e}"
             )
+
+        if self.indexer and parameters.unit_cell and parameters.wavelength:
+            ## We have all we need to index, so make up to date models.
+            cell = gemmi.UnitCell(*parameters.unit_cell)
+            self.indexer.cell = np.reshape(
+                np.array(cell.orth.mat, dtype="float32"), (3, 3)
+            )  ## Cell as an orthogonalisation matrix
+            ## convert beam centre to correct units (given in mm, want in px).
+            px_size_x = detector_geometry.detector.pixel_size_x
+            px_size_y = detector_geometry.detector.pixel_size_y
+            mu = detector_geometry.detector.calculate_mu(parameters.wavelength)
+            self.indexer.panel = ffs.index.make_panel(
+                detector_geometry.distance,
+                detector_geometry.beam_center_x / px_size_x,
+                detector_geometry.beam_center_y / px_size_y,
+                px_size_x,
+                px_size_y,
+                detector_geometry.detector.image_size_x,
+                detector_geometry.detector.image_size_y,
+                detector_geometry.detector.thickness,
+                mu,
+            )
+            self.indexer.wavelength = parameters.wavelength
+            self.output_for_index = (
+                True  # The indexer has been configured, so can run the spotfinder
+            )
+            # with --output-for-index and capture the results in read_and_send.
 
         start_time = time.monotonic()
         self.log.info(
@@ -269,7 +368,7 @@ class GPUPerImageAnalysis(CommonService):
 
         # Now run the spotfinder
         command = [
-            str(self._spotfinder_executable),
+            str(self._spotfinder_executable[0]),
             str(data_path),
             "--images",
             str(parameters.number_of_frames),
@@ -288,6 +387,8 @@ class GPUPerImageAnalysis(CommonService):
             command.extend(["--dmin", str(parameters.d_min)])
         if parameters.d_max:
             command.extend(["--dmax", str(parameters.d_max)])
+        if self.output_for_index:
+            command.extend(["--output-for-index"])
 
         self.log.info(f"Running: {' '.join(str(x) for x in command)}")
 
@@ -326,6 +427,14 @@ class GPUPerImageAnalysis(CommonService):
                 data["file-seen-at"] = time.time()
                 # XRC has one-based-indexing
                 data["file-number"] += 1
+                ## Do indexing
+                if self.output_for_index:
+                    xyzobs_px = np.array(data["spot_centers"])
+                    indexing_result = self.indexer.index(xyzobs_px)
+                    self.log.info(indexing_result.model_dump_json(indent=2))
+                    result = indexing_result.model_dump()
+                    data.update(result)
+                    del data["spot_centers"]  # don't send this data array onwards.
                 self.log.info(f"Sending: {data}")
                 rw.set_default_channel("result")
                 rw.send_to("result", data)
@@ -338,16 +447,20 @@ class GPUPerImageAnalysis(CommonService):
         # Run the spotfinder
         self._spotfind_proc = subprocess.Popen(command, pass_fds=[write_fd])
 
-        # Close the write end of the pipe (for this process)
-        # spotfind_process will hold the write end open until it is done
-        # This will allow the read end to detect the end of the output
-        os.close(write_fd)
-
         # Start the read thread
         read_and_send_data_thread.start()
 
         # Wait for the process to finish
-        self._spotfind_proc.wait()
+        if self._spotfind_proc.wait() == 32:
+            self.log.info("Spotfinder exited indicating data is 32-bit, relaunching")
+            # We need to run the 32-bit version of the spotfinder instead....
+            command[0] = str(self._spotfinder_executable[1])
+            self._spotfind_proc = subprocess.Popen(command, pass_fds=[write_fd])
+
+        # Close the write end of the pipe (for this process)
+        # spotfind_process will hold the write end open until it is done
+        # This will allow the read end to detect the end of the output
+        os.close(write_fd)
 
         # Log the duration
         duration = time.monotonic() - start_time

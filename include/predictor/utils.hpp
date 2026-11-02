@@ -1,0 +1,71 @@
+/**
+ * @file utils.hpp
+ * @brief Shared helpers for spot prediction (rotation, JSON conversion, Ray).
+ */
+
+#pragma once
+
+#include <Eigen/Dense>
+#include <cmath>
+#include <nlohmann/json.hpp>
+
+/**
+ * @brief A class to store the axis of rotation and return a rotation matrix for
+ * a given angle about it.
+ */
+class Rotator {
+  private:
+    Eigen::Vector3d axis_ = Eigen::Vector3d{0, 0, 0};
+
+  public:
+    Rotator(const Eigen::Vector3d &axis) : axis_(axis.normalized()) {}
+
+    /**
+     * @brief Output a rotation matrix corresponding to a given axis and angle.
+     *
+     * @param theta The rotation angle θ, in degrees
+     */
+    Eigen::Matrix3d rotation_matrix(double theta) const {
+        return Eigen::AngleAxisd(theta * M_PI / 180, axis_).toRotationMatrix();
+    }
+
+    /**
+     * @brief Rotate a 3D vector by a given angle around the pre-specified axis
+     */
+    Eigen::Vector3d rotate(const Eigen::Vector3d &vec, double theta) const {
+        return rotation_matrix(theta) * vec;
+    }
+
+    /**
+     * @brief Multiply the rotation matrix (angle θ) by a 3x3 matrix and return
+     * the result.
+     */
+    Eigen::Matrix3d rotate(const Eigen::Matrix3d &mat, double theta) const {
+        return rotation_matrix(theta) * mat;
+    }
+};
+
+/**
+ * @brief Takes in a json list of numbers and returns a 3x3 matrix
+ * representation of it.
+ *
+ * @param matrix_json The json object, a list of numbers with length 9.
+ */
+Eigen::Matrix3d matrix_3d_from_json(nlohmann::json matrix_json);
+
+/**
+ * @brief Takes in a json list of numbers and returns a 3D vector representation
+ * of it.
+ *
+ * @param vector_json The json object, a list of numbers with length 3.
+ */
+Eigen::Vector3d vector_3d_from_json(nlohmann::json vector_json);
+
+/**
+ * @brief A struct to store information about the predicted reflected ray.
+ */
+struct Ray {
+    Eigen::Vector3d s1;
+    double angle;
+    bool entering;
+};

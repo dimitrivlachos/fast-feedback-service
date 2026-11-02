@@ -6,7 +6,7 @@
  * (double3/float3) for optimal GPU performance. The implementation wraps CUDA's
  * native types with convenient mathematical operations.
  * 
- *  * Performance Design:
+ * Performance Design:
  * - Uses CUDA's hardware-optimized double3/float3 types directly
  * - Free functions avoid virtual function call overhead
  * - Maintains guaranteed memory layout for vectorized GPU operations
@@ -19,9 +19,10 @@
  * - Data access: span() for mdspan integration
  * 
  * Precision Control:
- * The library supports compile-time precision switching via USE_DOUBLE_PRECISION:
- * - Default: single precision (float3) for optimal GPU performance
- * - With -DUSE_DOUBLE_PRECISION: double precision (double3) for accuracy
+ * The library supports compile-time precision switching via USE_REDUCED_PRECISION:
+ * - Default: double precision (double3) for accuracy and bit-exact parity
+ * - With -DUSE_REDUCED_PRECISION: single precision (float3) for speed on
+ *   FP64-throttled GPUs (drifts pixel classification off the double result)
  * 
  * Usage Examples:
  * ```cpp
@@ -57,13 +58,14 @@
 
 namespace fastvec {
 
-// Type configuration
-#ifdef USE_DOUBLE_PRECISION
-using Vector3D = double3;
-#define MAKE_VECTOR3D make_double3
-#else
+// Type configuration. Double is the default; defining USE_REDUCED_PRECISION
+// switches to single.
+#ifdef USE_REDUCED_PRECISION
 using Vector3D = float3;
 #define MAKE_VECTOR3D make_float3
+#else
+using Vector3D = double3;
+#define MAKE_VECTOR3D make_double3
 #endif
 
 // Convenience aliases for mdspan types
@@ -105,6 +107,16 @@ __host__ __device__ inline Vector3D operator+(const Vector3D &a, const Vector3D 
  */
 __host__ __device__ inline Vector3D operator-(const Vector3D &a, const Vector3D &b) {
     return MAKE_VECTOR3D(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/**
+ * @brief Vector unary negation operator
+ * Computes: -**v** = (-v.x, -v.y, -v.z)
+ * @param v Vector to negate
+ * @return Negated vector
+ */
+__host__ __device__ inline Vector3D operator-(const Vector3D &v) {
+    return MAKE_VECTOR3D(-v.x, -v.y, -v.z);
 }
 
 /**

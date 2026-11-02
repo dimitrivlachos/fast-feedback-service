@@ -11,10 +11,34 @@
 #       things like dev, rc, prerelease). Dev versions will have the
 #       X.Y.0 of the next release, and non-dev branches will be plain
 #       X.Y.Z.
+#
+# Accepts:
+#   SKBUILD_PROJECT_VERSION_FULL, SKBUILD_PROJECT_VERSION
+#       Set by the python build, which resolves the version with
+#       setuptools_scm. Preferred when present, so that the python
+#       metadata and the compiled binaries carry one resolved version
+#       rather than two independently calculated ones.
+#   FFS_VERSION_DESCRIBE
+#       A `git describe --tags --long --first-parent` string to use in
+#       place of asking git. For a build tree with no git history to
+#       query and no python build to take the version from.
+
+set(FFS_VERSION_DESCRIBE "" CACHE STRING "git describe output to use instead of querying git")
 
 find_package(Git QUIET)
 
-if(NOT Git_FOUND)
+if(SKBUILD_PROJECT_VERSION_FULL)
+    set(FFS_VERSION_FULL "${SKBUILD_PROJECT_VERSION_FULL}")
+    set(FFS_VERSION_CMAKE "${SKBUILD_PROJECT_VERSION}")
+    message(STATUS "Version from the python build: ${FFS_VERSION_FULL}")
+endif()
+
+if(DEFINED FFS_VERSION_FULL)
+    # already resolved above
+elseif(FFS_VERSION_DESCRIBE)
+    set(REPO_VERSION "${FFS_VERSION_DESCRIBE}")
+    message(STATUS "Using supplied version description: ${REPO_VERSION}")
+elseif(NOT Git_FOUND)
     set(FFS_VERSION_FULL "0.0.0.dev0+g000000")
     set(FFS_VERSION_CMAKE "0.0.0")
     message(WARNING "No git, could not determine repository version")
@@ -28,6 +52,9 @@ else()
         ERROR_QUIET
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
+endif()
+
+if(NOT DEFINED FFS_VERSION_FULL)
     if (NOT REPO_VERSION)
         set(FFS_VERSION_FULL "0.0.0.dev0+g000000")
         set(FFS_VERSION_CMAKE "0.0.0")

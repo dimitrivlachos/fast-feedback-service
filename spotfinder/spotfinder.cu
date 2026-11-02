@@ -51,7 +51,7 @@ void set_kernel_constants(cudaStream_t stream,
       n_sig_s,
     };
 
-    CUDA_CHECK(cudaMemcpyToSymbolAsync(kernel_constants,
+    cuda_check(cudaMemcpyToSymbolAsync(kernel_constants,
                                        &host_constants,
                                        sizeof(KernelConstants),
                                        0,
@@ -133,7 +133,6 @@ void debug_writeout(uint8_t *device_data,
  *
  * @param blocks The dimensions of the grid of blocks.
  * @param threads The dimensions of the grid of threads within each block.
- * @param shared_memory The size of shared memory required per block (in bytes).
  * @param stream The CUDA stream to execute the kernel.
  * @param image PitchedMalloc object for the image data.
  * @param mask PitchedMalloc object for the mask data indicating valid pixels.
@@ -175,7 +174,7 @@ void call_do_spotfinding_dispersion(dim3 blocks,
       threads, KERNEL_RADIUS);  // Required shared memory
 
     // Synchronize the CUDA stream to ensure the kernel constants are set
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 
     // Launch the dispersion threshold kernel
     dispersion<<<blocks, threads, shared_memory, stream>>>(
@@ -183,9 +182,10 @@ void call_do_spotfinding_dispersion(dim3 blocks,
       mask.get(),           // Mask data pointer
       result_strong->get()  // Output mask pointer
     );
+    cuda_check_launch("dispersion");
 
     // Synchronize the CUDA stream to ensure the kernel is complete
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 }
 
 /**
@@ -196,7 +196,6 @@ void call_do_spotfinding_dispersion(dim3 blocks,
  *
  * @param blocks The dimensions of the grid of blocks.
  * @param threads The dimensions of the grid of threads within each block.
- * @param shared_memory The size of shared memory required per block (in bytes).
  * @param stream The CUDA stream to execute the kernel.
  * @param image PitchedMalloc object for the image data.
  * @param mask PitchedMalloc object for the mask data indicating valid pixels.
@@ -208,7 +207,6 @@ void call_do_spotfinding_dispersion(dim3 blocks,
  * @param min_count The minimum number of valid pixels required in the local neighborhood. Default is 3.
  * @param n_sig_b The background noise significance level. Default is 6.0.
  * @param n_sig_s The signal significance level. Default is 3.0.
- * @param threshold The global threshold for intensity values. Default is 0.
  */
 void call_do_spotfinding_extended(dim3 blocks,
                                   dim3 threads,
@@ -245,7 +243,7 @@ void call_do_spotfinding_extended(dim3 blocks,
     PitchedMalloc<uint8_t> d_erosion_mask(width, height);
 
     // Synchronize the CUDA stream to ensure the kernel constants are set
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 
     /*
      * First pass 🔎
@@ -258,6 +256,7 @@ void call_do_spotfinding_extended(dim3 blocks,
       mask.get(),              // Mask data pointer
       d_dispersion_mask.get()  // Output dispersion mask pointer
     );
+    cuda_check_launch("dispersion_extended_first_pass");
 
     // Calculate the shared memory required for the erosion pass
     // This is before the stream synchronization to overlap the kernel execution
@@ -265,7 +264,7 @@ void call_do_spotfinding_extended(dim3 blocks,
       threads, KERNEL_RADIUS);  // Required shared memory
 
     // Synchronize the CUDA stream to ensure the first pass is complete
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 
     if (do_writeout) {
         printf("First pass complete\n");
@@ -295,6 +294,7 @@ void call_do_spotfinding_extended(dim3 blocks,
                                                         d_erosion_mask.pitch,
                                                         mask.pitch,
                                                         KERNEL_RADIUS);
+    cuda_check_launch("erosion");
 
     // Calculate the shared memory required for the second pass
     // This is before the stream synchronization to overlap the kernel execution
@@ -302,7 +302,7 @@ void call_do_spotfinding_extended(dim3 blocks,
       threads, KERNEL_RADIUS_EXTENDED);  // Required shared memory
 
     // Synchronize the CUDA stream to ensure the erosion pass is complete
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 
     if (do_writeout) {
         printf("Erosion pass complete\n");
@@ -328,9 +328,10 @@ void call_do_spotfinding_extended(dim3 blocks,
       result_strong->get(),  // Output result mask pointer
       d_erosion_mask.pitch   // Dispersion mask pitch
     );
+    cuda_check_launch("dispersion_extended_second_pass");
 
     // Synchronize the CUDA stream to ensure the second pass is complete
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    cuda_check(cudaStreamSynchronize(stream));
 
     if (do_writeout) {
         printf("Second pass complete\n");

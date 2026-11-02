@@ -141,7 +141,30 @@ void ConnectedComponents::generate_boxes(const uint32_t width,
 
 #pragma region Reflection3D
 bool Reflection3D::is_signal_preferred(const Signal &candidate,
-                                       const Signal &current) const {
+                                       const Signal &current,
+                                       double com_x,
+                                       double com_y,
+                                       double com_z) const {
+    // Prefer the pixel nearest the centroid (see
+    // https://github.com/dials/dials/issues/3014). Squared distance
+    // avoids a per-pixel sqrt; the 0.5 offset puts the position at the
+    // pixel centre, as in center_of_mass().
+    auto distance_sq = [](const Signal &s, double cx, double cy, double cz) {
+        double dx = (static_cast<double>(s.x) + 0.5) - cx;
+        double dy = (static_cast<double>(s.y) + 0.5) - cy;
+        double dz = (static_cast<double>(s.z.value()) + 0.5) - cz;
+        return dx * dx + dy * dy + dz * dz;
+    };
+
+    double candidate_dist_sq = distance_sq(candidate, com_x, com_y, com_z);
+    double current_dist_sq = distance_sq(current, com_x, com_y, com_z);
+    if (candidate_dist_sq != current_dist_sq) {
+        return candidate_dist_sq < current_dist_sq;
+    }
+
+    // Equal distance to the centroid: fall back to a deterministic z, y, x
+    // ordering so the choice is independent of signal iteration order.
+
     // Compare z-coordinates first
     if (candidate.z.value() != current.z.value()) {
         return candidate.z.value() < current.z.value();
@@ -207,8 +230,8 @@ std::tuple<double, double, int> Reflection3D::variances_in_kabsch_space(
 std::tuple<int, int> filter_reflections(std::vector<Reflection3D> &reflections,
                                         const uint min_spot_size,
                                         const float max_peak_centroid_separation) {
-    int n_filtered_by_spot_size;
-    int n_filtered_by_separation;
+    int n_filtered_by_spot_size = 0;
+    int n_filtered_by_separation = 0;
     int n_current = reflections.size();
     if (min_spot_size > 0) {
         reflections.erase(std::remove_if(reflections.begin(),
@@ -349,7 +372,7 @@ std::vector<Reflection3D> ConnectedComponents::find_3d_components(
      */
     logger.debug("Adding inter-slice connectivity");
     // Loop through all slices except the last one
-    for (size_t i = 0; i < slices.size() - 1; ++i) {
+    for (size_t i = 0; i + 1 < slices.size(); ++i) {
         const auto &current_vertex_map =
           local_to_global_vertex_maps[i];  // Current slice
         const auto &next_vertex_map = local_to_global_vertex_maps[i + 1];  // Next slice
